@@ -9,14 +9,14 @@ if (current_user_id()) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Hospital Management System</title>
+    <title>Hospital Appointment Management System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="assets/css/style.css">
 </head>
 <body class="home-page">
     <header class="navbar">
-        <a class="brand" href="#home">HMS</a>
+        <a class="brand" href="#home">Hospital Appointment Management System</a>
         <nav class="site-nav">
             <a href="#about">About</a>
             <a href="#features">What We Do</a>
