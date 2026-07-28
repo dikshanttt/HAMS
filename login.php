@@ -54,50 +54,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Login</title>
-    <link rel="stylesheet" href="assets/css/style.css">
+   <meta charset="UTF-8">
+   <title>Hospital Appointment Management System</title>
+   <link rel="stylesheet" href="assets/css/style.css">
 </head>
 <body>
-    <?php include __DIR__ . '/includes/auth_header.php'; ?>
-    <div class="auth-shell">
-        <div class="auth-card">
-            <div class="auth-intro">
-                <span class="auth-badge">Hospital Management System</span>
-                <h2>Welcome back</h2>
-                <p>Sign in to access your role-based dashboard for patients, doctors, and administrators.</p>
-                <ul class="auth-features">
-                    <li>Secure sign-in experience</li>
-                    <li>Quick access to appointments and records</li>
-                    <li>Simple onboarding for new users</li>
-                </ul>
-            </div>
-            <div class="auth-form-panel">
-                <div class="container">
-                    <h1>Login</h1>
+<?php include __DIR__ . '/includes/auth_header.php'; ?>
 
-                    <?php foreach ($errors as $error): ?>
-                        <div class="error"><?= clean($error) ?></div>
-                    <?php endforeach; ?>
+<div class="auth-shell">
+   <div class="auth-card">
+       <div class="auth-intro">
+           <span class="auth-badge">Hospital Appointment Management System</span>
+           <h2>Welcome</h2>
+           <p>Secure access to the appointment management system for patients and doctors</p>
+           <ul class="auth-features">
+               <li>Secure sign-in experience</li>
+               <li>Quick access to appointments</li>
+               <li>Simple onboarding process</li>
+           </ul>
+       </div>
 
-                    <form method="POST" novalidate>
-                        <?= csrf_field() ?>
-                        <label for="identifier">Email (Patients/Admins) or Doctor Login ID</label>
-                        <input type="text" id="identifier" name="identifier" value="<?= clean($identifier) ?>" required>
+       <div class="auth-form-panel">
+           <div class="container">
+               <h1>Login</h1>
 
-                        <label for="password">Password</label>
-                        <input type="password" id="password" name="password" required>
+                <?php foreach ($errors as $error): ?>
+                   <div class="error"><?= htmlspecialchars($error) ?></div>
+                <?php endforeach; ?>
 
-                        <button type="submit">Log In</button>
-                    </form>
-                    <div class="links">
-                        New here?
-                        <a href="register/patient.php">Register as Patient</a> ·
-                        <a href="register/doctor.php">Register as Doctor</a> 
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</body>
+               <form method="POST" novalidate>
+                    <?= csrf_field() ?>
+
+                   <label for="identifier">Email or Unique Login ID</label>
+                   <input type="text" id="identifier" name="identifier" 
+                           maxlength="100" required value="<?= htmlspecialchars($identifier) ?>">
+                    
+                   <label for="password">Password</label>
+                   <input type="password" id="password" name="password" 
+                           maxlength="72" required>
+                    
+                   <button type="submit">Access Appointment System</button>
+               </form>
+
+               <div class="links">
+                    New here? 
+                   <a href="register/patient.php">Register as Patient</a> · 
+                   <a href="register/doctor.php">Register as Doctor</a>
+               </div>
+           </div>
+       </div>
+   </div>
+</div>
+<body>
 </html>
