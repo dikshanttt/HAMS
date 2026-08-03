@@ -54,7 +54,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<<<<<<< HEAD
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Patient Login | HAMS</title>
@@ -159,58 +158,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         });
     </script>
 </body>
-=======
-   <meta charset="UTF-8">
-   <title>Hospital Appointment Management System</title>
-   <link rel="stylesheet" href="assets/css/style.css">
-</head>
-<body>
-<?php include __DIR__ . '/includes/auth_header.php'; ?>
-
-<div class="auth-shell">
-   <div class="auth-card">
-       <div class="auth-intro">
-           <span class="auth-badge">Hospital Appointment Management System</span>
-           <h2>Welcome</h2>
-           <p>Secure access to the appointment management system for patients and doctors</p>
-           <ul class="auth-features">
-               <li>Secure sign-in experience</li>
-               <li>Quick access to appointments</li>
-               <li>Simple onboarding process</li>
-           </ul>
-       </div>
-
-       <div class="auth-form-panel">
-           <div class="container">
-               <h1>Login</h1>
-
-                <?php foreach ($errors as $error): ?>
-                   <div class="error"><?= htmlspecialchars($error) ?></div>
-                <?php endforeach; ?>
-
-               <form method="POST" novalidate>
-                    <?= csrf_field() ?>
-
-                   <label for="identifier">Email or Unique Login ID</label>
-                   <input type="text" id="identifier" name="identifier" 
-                           maxlength="100" required value="<?= htmlspecialchars($identifier) ?>">
-                    
-                   <label for="password">Password</label>
-                   <input type="password" id="password" name="password" 
-                           maxlength="72" required>
-                    
-                   <button type="submit">Access Appointment System</button>
-               </form>
-
-               <div class="links">
-                    New here? 
-                   <a href="register/patient.php">Register as Patient</a> · 
-                   <a href="register/doctor.php">Register as Doctor</a>
-               </div>
-           </div>
-       </div>
-   </div>
-</div>
-<body>
->>>>>>> 20f687558e2e16b57fad6ec44ec65fad6794a145
 </html>

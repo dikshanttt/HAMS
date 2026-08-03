@@ -9,20 +9,27 @@ if (current_user_id()) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Hospital Management System</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HAMS | Online Hospital Appointment Booking</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..800;1,9..144,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/style.css?v=<?= filemtime('assets/css/style.css'); ?>">
 </head>
 <body class="home-page">
-    <header class="navbar">
-        <a class="brand" href="#home">HMS</a>
-        <nav class="site-nav">
-            <a href="#about">About</a>
-            <a href="#features">What We Do</a>
-            <a href="#help">Help</a>
-            <a href="login.php" class="btn-nav" style="color:white">Login</a>
+
+    <header class="topbar navbar">
+        <a class="brand" href="#home">
+            <span class="brand-mark">✚</span>
+            <span>HAMS</span>
+        </a>
+        <nav class="nav-links site-nav" aria-label="Primary navigation">
+            <a href="#home">Home</a>
+            <a href="#hospitals">Hospitals</a>
+            <a href="#doctors">Doctors</a>
+            <a href="#appointments">Appointments</a>
+            <a href="#faq">FAQ</a>
+            <a href="#contact">Contact</a>
         </nav>
         <div class="nav-actions">
             <a class="login-link" href="login.php">Login</a>
