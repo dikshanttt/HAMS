@@ -8,10 +8,44 @@ function clean(string $value): string
     return htmlspecialchars(trim($value), ENT_QUOTES, 'UTF-8');
 }
 
+function base_path(): string
+{
+    $scriptBase = dirname($_SERVER['SCRIPT_NAME'] ?? '/');
+    if ($scriptBase === '/' || $scriptBase === '\\' || $scriptBase === '.') {
+        return '';
+    }
+
+    return rtrim($scriptBase, '/');
+}
+
 function redirect(string $path): void
 {
-    header("Location: $path");
+    if (preg_match('#^https?://#i', $path)) {
+        header('Location: ' . $path);
+        exit;
+    }
+
+    $base = base_path();
+    $target = str_starts_with($path, '/') ? $path : '/' . $path;
+
+    if ($base !== '') {
+        $target = $base . $target;
+    }
+
+    header('Location: ' . $target);
     exit;
+}
+
+function set_flash(string $type, string $message): void
+{
+    $_SESSION['flash'] = ['type' => $type, 'message' => $message];
+}
+
+function get_flash(): ?array
+{
+    $flash = $_SESSION['flash'] ?? null;
+    unset($_SESSION['flash']);
+    return $flash;
 }
 
 // ---- CSRF protection --------------------------------------------------

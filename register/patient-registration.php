@@ -1,3 +1,61 @@
+<?php
+require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/functions.php';
+require_once __DIR__ . '/../config/db.php';
+
+$errors = [];
+$name = '';
+$email = '';
+$phone = '';
+$dob = '';
+$gender = '';
+$cause = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+
+    $name = trim($_POST['patientName'] ?? '');
+    $email = trim($_POST['patientEmail'] ?? '');
+    $phone = trim($_POST['patientPhone'] ?? '');
+    $dob = trim($_POST['patientDob'] ?? '');
+    $gender = trim($_POST['patientGender'] ?? '');
+    $cause = trim($_POST['patientCause'] ?? '');
+    $password = $_POST['patientPassword'] ?? '';
+    $confirmPassword = $_POST['patientConfirmPassword'] ?? '';
+
+    if ($name === '' || $email === '' || $phone === '' || $dob === '' || $gender === '' || $cause === '' || $password === '' || $confirmPassword === '') {
+        $errors[] = 'All fields are required.';
+    } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $errors[] = 'Please enter a valid email address.';
+    } elseif ($password !== $confirmPassword) {
+        $errors[] = 'Passwords do not match.';
+    } else {
+        $db = getDB();
+        $check = $db->prepare('SELECT 1 FROM users WHERE email = ?');
+        $check->execute([$email]);
+        if ($check->fetch()) {
+            $errors[] = 'A user with this email already exists.';
+        } else {
+            try {
+                $db->beginTransaction();
+                $userStmt = $db->prepare('INSERT INTO users (email, password_hash, role, status) VALUES (?, ?, ?, ?) RETURNING id');
+                $userStmt->execute([$email, password_hash($password, PASSWORD_DEFAULT), 'patient', 'active']);
+                $userId = (int) $userStmt->fetchColumn();
+
+                $profileStmt = $db->prepare('INSERT INTO patient_profiles (user_id, name, phone, date_of_birth, gender, cause) VALUES (?, ?, ?, ?, ?, ?)');
+                $profileStmt->execute([$userId, $name, $phone, $dob, $gender, $cause]);
+
+                $db->commit();
+                set_flash('success', 'Your patient account was created successfully. Please log in.');
+                redirect('/login.php');
+            } catch (Throwable $e) {
+                $db->rollBack();
+                $errors[] = 'Unable to create the account right now. Please try again.';
+            }
+        }
+    }
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,34 +74,43 @@
                     <p>Enter your details to book appointments and manage your healthcare journey.</p>
                 </div>
 
-                <form id="patientForm" class="register-form" novalidate>
+                <?php foreach ($errors as $error): ?>
+                    <div class="error-message"><?= clean($error) ?></div>
+                <?php endforeach; ?>
+
+                <form id="patientForm" class="register-form" method="POST" novalidate>
+                    <?= csrf_field() ?>
                     <div class="form-row">
                         <label for="patientName">Full Name</label>
-                        <input id="patientName" name="patientName" type="text" placeholder="Jane Doe" required>
+                        <input id="patientName" name="patientName" type="text" value="<?= clean($name) ?>" placeholder="Jane Doe" required>
                     </div>
                     <div class="form-row">
                         <label for="patientEmail">Email Address</label>
-                        <input id="patientEmail" name="patientEmail" type="email" placeholder="jane@example.com" required>
+                        <input id="patientEmail" name="patientEmail" type="email" value="<?= clean($email) ?>" placeholder="jane@example.com" required>
                     </div>
                     <div class="form-row">
                         <label for="patientPhone">Phone Number</label>
-                        <input id="patientPhone" name="patientPhone" type="tel" placeholder="(123) 456-7890" required>
+                        <input id="patientPhone" name="patientPhone" type="tel" value="<?= clean($phone) ?>" placeholder="(123) 456-7890" required>
                     </div>
                     <div class="form-row form-grid-2">
                         <div>
                             <label for="patientDob">Date of Birth</label>
-                            <input id="patientDob" name="patientDob" type="date" required>
+                            <input id="patientDob" name="patientDob" type="date" value="<?= clean($dob) ?>" required>
                         </div>
                         <div>
                             <label for="patientGender">Gender</label>
                             <select id="patientGender" name="patientGender" required>
                                 <option value="">Select gender</option>
-                                <option value="female">Female</option>
-                                <option value="male">Male</option>
-                                <option value="other">Other</option>
-                                <option value="prefer_not">Prefer not to say</option>
+                                <option value="female" <?= ($gender === 'female') ? 'selected' : '' ?>>Female</option>
+                                <option value="male" <?= ($gender === 'male') ? 'selected' : '' ?>>Male</option>
+                                <option value="other" <?= ($gender === 'other') ? 'selected' : '' ?>>Other</option>
+                                <option value="prefer_not" <?= ($gender === 'prefer_not') ? 'selected' : '' ?>>Prefer not to say</option>
                             </select>
                         </div>
+                    </div>
+                    <div class="form-row">
+                        <label for="patientCause">Reason / Cause for Appointment</label>
+                        <textarea id="patientCause" name="patientCause" rows="4" placeholder="Describe your concern or reason for the appointment" required><?= clean($cause) ?></textarea>
                     </div>
                     <div class="form-row">
                         <label for="patientPassword">Password</label>

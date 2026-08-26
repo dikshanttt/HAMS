@@ -9,6 +9,7 @@ if (current_user_id()) {
 
 $errors = [];
 $identifier = '';
+$flash = get_flash();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -21,8 +22,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } else {
         $db = getDB();
 
-        // Doctors log in with a doctor_login_id (e.g. DOC-1001), everyone
-        // else logs in with their email. Detect which one we were given.
         if (preg_match('/^DOC-\d+$/i', $identifier)) {
             $stmt = $db->prepare('SELECT * FROM users WHERE doctor_login_id = ? AND role = ?');
             $stmt->execute([strtoupper($identifier), 'doctor']);
@@ -33,9 +32,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $user = $stmt->fetch();
 
-        // Doctors whose password_hash is still NULL (not yet verified) will
-        // simply fail verification here — no separate check needed, since
-        // password_verify() against a NULL hash always returns false.
         if (!$user || !$user['password_hash'] || !password_verify($password, $user['password_hash'])) {
             $errors[] = 'Invalid credentials.';
         } elseif ($user['status'] !== 'active') {
@@ -45,7 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $errors[] = 'Your account is not active. Please contact an administrator.';
             }
         } else {
-            login_user((int)$user['id'], $user['role']);
+            login_user((int) $user['id'], $user['role']);
+
+            if ($user['force_password_change']) {
+                redirect('/change-password.php');
+            }
+
             redirect('/' . $user['role'] . '/dashboard.php');
         }
     }
@@ -53,15 +54,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 ?>
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Patient Login | HAMS</title>
+    <title>Login | HAMS</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/style.css?v=2.0">
 </head>
+
 <body class="login-page">
     <div class="login-shell">
         <section class="login-visual" aria-label="Healthcare welcome illustration">
@@ -70,7 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <span class="brand-mark">✚</span>
                     <span>HAMS</span>
                 </a>
-                <p class="eyebrow">Patient Portal</p>
+                <p class="eyebrow">Access Portal</p>
                 <h1>Your Healthcare Journey Starts Here</h1>
                 <p class="hero-copy">Book appointments, manage visits, and connect with trusted hospitals easily.</p>
 
@@ -109,9 +112,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         <section class="login-form-panel">
             <div class="login-card">
-                <p class="eyebrow">Patient Access</p>
+                <p class="eyebrow">Access Portal</p>
                 <h2>Welcome Back</h2>
                 <p class="subtext">Login to manage your hospital appointments.</p>
+
+                <?php if ($flash): ?>
+                    <div class="success-message"><?= clean($flash['message']) ?></div>
+                <?php endif; ?>
 
                 <?php foreach ($errors as $error): ?>
                     <div class="error-message"><?= clean($error) ?></div>
@@ -119,9 +126,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 <form method="POST" novalidate>
                     <?= csrf_field() ?>
-                    <label for="identifier">Email Address</label>
+                    <label for="identifier">Email Address or Doctor ID</label>
                     <div class="input-wrap">
-                        <input type="email" id="identifier" name="identifier" value="<?= clean($identifier) ?>" placeholder="Enter your email" required>
+                        <input type="text" id="identifier" name="identifier" value="<?= clean($identifier) ?>" placeholder="Enter your email or DOC-1001" required>
                     </div>
 
                     <label for="password">Password</label>
@@ -130,27 +137,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <button type="button" class="toggle-password" aria-label="Show password">👁</button>
                     </div>
 
-                    <div class="form-row">
-                        <label class="checkbox-row">
-                            <input type="checkbox" checked>
-                            <span>Remember me</span>
-                        </label>
-                        <a class="text-link" href="#">Forgot Password?</a>
-                    </div>
-
                     <button class="btn btn-primary login-btn" type="submit">Login</button>
                 </form>
 
                 <div class="alt-actions">
-                    <p>Don't have an account? <a class="text-link" href="register/patient.php">Create Patient Account</a></p>
-                    <a class="guest-link" href="#">Continue as Guest</a>
+                    <p>Don't have an account? <a class="text-link" href="register/account-type.php">Create an Account</a></p>
                 </div>
             </div>
         </section>
     </div>
 
     <script>
-        document.querySelector('.toggle-password')?.addEventListener('click', function () {
+        document.querySelector('.toggle-password')?.addEventListener('click', function() {
             const passwordInput = document.getElementById('password');
             const isHidden = passwordInput.type === 'password';
             passwordInput.type = isHidden ? 'text' : 'password';
@@ -158,4 +156,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         });
     </script>
 </body>
+
 </html>

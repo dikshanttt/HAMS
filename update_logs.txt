@@ -57,3 +57,59 @@ Database: PostgreSQL
 
 === Created by: System Administrator ===
 === HRMS System Update - 2026-07-25 ===
+
+=== HAMS System Update Log ===
+Date: 2026-08-03
+Time: Authentication and Registration Implementation
+Team: HAMS
+
+=== System: Hospital Appointment Management System ===
+
+=== Update Summary ===
+
+1. Authentication Flow Implementation
+   - Implemented role-based login for patients, doctors, and admins
+   - Added login support for doctor-specific login IDs (DOC-XXXX)
+   - Added session-based redirection to the correct role dashboard
+   - Added flash messages for successful registration and login feedback
+
+2. Registration Flow Implementation
+   - Implemented patient account registration with database persistence
+   - Implemented doctor application submission with pending status
+   - Added validation for required fields and duplicate email prevention
+   - Connected registration forms to PostgreSQL database through PDO
+
+3. Dashboard Routing
+   - Added simple dashboard landing pages for patient, doctor, and admin roles
+   - Ensured each role is redirected to their own blank dashboard after login
+
+4. Database Schema Updates
+   - Added PostgreSQL-compatible seed data for an initial admin account
+   - Added admin account credentials for first-time access
+
+=== Files Modified ===
+- login.php
+- register/patient-registration.php
+- register/doctor-registration.php
+- includes/auth.php
+- includes/functions.php
+- patient/dashboard.php
+- doctor/dashboard.php
+- admin/dashboard.php
+- schema.sql
+
+=== Database Configuration ===
+Database: PostgreSQL
+    - Host: 127.0.0.1
+    - Port: 5432
+    - Database: hms
+    - User: postgres
+    - Driver: pgsql
+
+=== Notes ===
+- Default admin login: admin@example.com / ChangeMe123!
+- Doctor accounts are created as pending and require admin approval later
+- Dashboards are intentionally left blank for future UI development
+
+=== Created by: System Administrator ===
+=== HAMS System Update - 2026-08-03 ===
