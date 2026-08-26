@@ -10,7 +10,17 @@ function clean(string $value): string
 
 function base_path(): string
 {
-    $scriptBase = dirname($_SERVER['SCRIPT_NAME'] ?? '/');
+    $scriptPath = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '/');
+    $scriptBase = dirname($scriptPath);
+    $nestedDirectories = ['/admin', '/doctor', '/patient', '/register'];
+
+    foreach ($nestedDirectories as $directory) {
+        if (str_ends_with($scriptBase, $directory)) {
+            $scriptBase = dirname($scriptBase);
+            break;
+        }
+    }
+
     if ($scriptBase === '/' || $scriptBase === '\\' || $scriptBase === '.') {
         return '';
     }

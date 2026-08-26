@@ -136,7 +136,7 @@ if (current_user_id()) {
                             <span>📍 1.2 km away</span>
                             <span>4.9 ★</span>
                         </div>
-                        <a href="register/patient.php" class="text-link">View Details & Book →</a>
+                        <a href="register/account-type.php" class="text-link">View Details & Book →</a>
                     </div>
                 </article>
                 <article class="hospital-card">
@@ -151,7 +151,7 @@ if (current_user_id()) {
                             <span>📍 3.5 km away</span>
                             <span>4.8 ★</span>
                         </div>
-                        <a href="register/patient.php" class="text-link">View Details & Book →</a>
+                        <a href="register/account-type.php" class="text-link">View Details & Book →</a>
                     </div>
                 </article>
                 <article class="hospital-card">
@@ -166,7 +166,7 @@ if (current_user_id()) {
                             <span>📍 4.1 km away</span>
                             <span>4.7 ★</span>
                         </div>
-                        <a href="register/patient.php" class="text-link">View Details & Book →</a>
+                        <a href="register/account-type.php" class="text-link">View Details & Book →</a>
                     </div>
                 </article>
             </div>
@@ -232,7 +232,7 @@ if (current_user_id()) {
                             <span class="slot-pill">05:30 PM</span>
                         </div>
                     </div>
-                    <a class="btn btn-primary small" href="register/patient.php">Book Appointment</a>
+                    <a class="btn btn-primary small" href="register/account-type.php">Book Appointment</a>
                 </article>
                 <article class="doctor-card">
                     <div class="doctor-avatar">DR</div>
@@ -250,7 +250,7 @@ if (current_user_id()) {
                             <span class="slot-pill">06:15 PM</span>
                         </div>
                     </div>
-                    <a class="btn btn-primary small" href="register/patient.php">Book Appointment</a>
+                    <a class="btn btn-primary small" href="register/account-type.php">Book Appointment</a>
                 </article>
                 <article class="doctor-card">
                     <div class="doctor-avatar">DR</div>
@@ -268,7 +268,7 @@ if (current_user_id()) {
                             <span class="slot-pill">05:00 PM</span>
                         </div>
                     </div>
-                    <a class="btn btn-primary small" href="register/patient.php">Book Appointment</a>
+                    <a class="btn btn-primary small" href="register/account-type.php">Book Appointment</a>
                 </article>
             </div>
         </section>
@@ -342,7 +342,7 @@ if (current_user_id()) {
         <section class="cta-section" id="contact">
             <h2>Ready to book your appointment?</h2>
             <p>Start your care journey with HAMS and secure your next visit in a few clicks.</p>
-            <a class="btn btn-primary" href="register/patient.php">Get Started</a>
+            <a class="btn btn-primary" href="register/account-type.php">Get Started</a>
         </section>
     </main>
 

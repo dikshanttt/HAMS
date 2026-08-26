@@ -1,28 +1,44 @@
 <?php
-/**
- * Minimal email wrapper.
- *
- * Uses PHP's built-in mail() as a placeholder so the flow works out of the box.
- * In practice most servers block/throttle mail(), so swap send_email()'s body
- * for PHPMailer + SMTP (Gmail, SendGrid, your college's SMTP, etc.) once you
- * pick a provider — nothing else in the codebase needs to change since every
- * caller just calls send_email($to, $subject, $body).
- *
- * composer require phpmailer/phpmailer   <-- only external dependency needed,
- * this is a library, not a framework, so it fits the "plain PHP" constraint.
- */
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception;
+
+// Load Composer's autoloader
+require_once __DIR__ . '/../vendor/autoload.php';
 
 function send_email(string $to, string $subject, string $body): bool
 {
-    $headers = "From: no-reply@example.com\r\n";
-    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+    $mail = new PHPMailer(true);
 
-    // mail() returns false on most local dev setups without a configured MTA.
-    // That's expected during development — check error logs, don't block the flow on it.
-    return @mail($to, $subject, $body, $headers);
+    try {
+        // Server settings
+        $mail->isSMTP();
+        $mail->Host       = 'smtp.gmail.com';
+        $mail->SMTPAuth   = true;
+        
+        // Using your provided credentials
+        $mail->Username   = getenv('SMTP_USER') ?: 'dikshantlama77@gmail.com'; 
+        $mail->Password   = getenv('SMTP_PASS') ?: 'dikshant@123'; 
+        
+        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = 587;
+
+        // Recipients
+        $mail->setFrom('dikshantlama77@gmail.com', 'HAMS Admin');
+        $mail->addAddress($to);
+
+        // Content
+        $mail->isHTML(false);
+        $mail->Subject = $subject;
+        $mail->Body    = $body;
+
+        return $mail->send();
+    } catch (Exception $e) {
+        // Optional: error_log("Mailer Error: {$mail->ErrorInfo}");
+        return false;
+    }
 }
 
-function send_doctor_verified_email(string $to, string $doctorName, string $loginId, string $tempPassword): void
+function send_doctor_verified_email(string $to, string $doctorName, string $loginId, string $tempPassword): bool
 {
     $subject = 'Your account has been verified';
     $body = "Hello Dr. $doctorName,\n\n"
@@ -30,15 +46,15 @@ function send_doctor_verified_email(string $to, string $doctorName, string $logi
           . "Login ID: $loginId\n"
           . "Temporary Password: $tempPassword\n\n"
           . "Please log in and change your password immediately.\n";
-    send_email($to, $subject, $body);
+    return send_email($to, $subject, $body);
 }
 
-function send_doctor_rejected_email(string $to, string $doctorName, string $reason): void
+function send_doctor_rejected_email(string $to, string $doctorName, string $reason): bool
 {
     $subject = 'Update on your registration';
     $body = "Hello Dr. $doctorName,\n\n"
           . "We were unable to verify your registration at this time.\n"
           . "Reason: $reason\n\n"
           . "Please contact the hospital admin office for more information.\n";
-    send_email($to, $subject, $body);
+    return send_email($to, $subject, $body);
 }

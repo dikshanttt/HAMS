@@ -9,7 +9,6 @@ $email = '';
 $phone = '';
 $dob = '';
 $gender = '';
-$cause = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -19,14 +18,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $phone = trim($_POST['patientPhone'] ?? '');
     $dob = trim($_POST['patientDob'] ?? '');
     $gender = trim($_POST['patientGender'] ?? '');
-    $cause = trim($_POST['patientCause'] ?? '');
     $password = $_POST['patientPassword'] ?? '';
     $confirmPassword = $_POST['patientConfirmPassword'] ?? '';
 
-    if ($name === '' || $email === '' || $phone === '' || $dob === '' || $gender === '' || $cause === '' || $password === '' || $confirmPassword === '') {
+    $date = DateTime::createFromFormat('Y-m-d', $dob);
+
+    if ($name === '' || $email === '' || $phone === '' || $dob === '' || $gender === '' || $password === '' || $confirmPassword === '') {
         $errors[] = 'All fields are required.';
+    } elseif (strlen($name) > 150 || strlen($phone) > 20) {
+        $errors[] = 'Please keep your name and phone number within the allowed length.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Please enter a valid email address.';
+    } elseif (!preg_match('/^[0-9+() .-]{7,20}$/', $phone)) {
+        $errors[] = 'Please enter a valid phone number.';
+    } elseif (!$date || $date->format('Y-m-d') !== $dob || $date > new DateTime('today')) {
+        $errors[] = 'Please enter a valid date of birth.';
+    } elseif (!in_array($gender, ['female', 'male', 'other', 'prefer_not'], true)) {
+        $errors[] = 'Please select a valid gender.';
+    } elseif (strlen($password) < 8) {
+        $errors[] = 'Password must be at least 8 characters long.';
     } elseif ($password !== $confirmPassword) {
         $errors[] = 'Passwords do not match.';
     } else {
@@ -42,8 +52,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $userStmt->execute([$email, password_hash($password, PASSWORD_DEFAULT), 'patient', 'active']);
                 $userId = (int) $userStmt->fetchColumn();
 
-                $profileStmt = $db->prepare('INSERT INTO patient_profiles (user_id, name, phone, date_of_birth, gender, cause) VALUES (?, ?, ?, ?, ?, ?)');
-                $profileStmt->execute([$userId, $name, $phone, $dob, $gender, $cause]);
+                $profileStmt = $db->prepare('INSERT INTO patient_profiles (user_id, name, phone, date_of_birth, gender) VALUES (?, ?, ?, ?, ?)');
+                $profileStmt->execute([$userId, $name, $phone, $dob, $gender]);
 
                 $db->commit();
                 set_flash('success', 'Your patient account was created successfully. Please log in.');
@@ -107,10 +117,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <option value="prefer_not" <?= ($gender === 'prefer_not') ? 'selected' : '' ?>>Prefer not to say</option>
                             </select>
                         </div>
-                    </div>
-                    <div class="form-row">
-                        <label for="patientCause">Reason / Cause for Appointment</label>
-                        <textarea id="patientCause" name="patientCause" rows="4" placeholder="Describe your concern or reason for the appointment" required><?= clean($cause) ?></textarea>
                     </div>
                     <div class="form-row">
                         <label for="patientPassword">Password</label>

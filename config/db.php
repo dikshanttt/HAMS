@@ -28,6 +28,7 @@ function getDB(): PDO
         return $pdo;
 
     } catch (PDOException $e) {
-        die('Database connection failed: ' . $e->getMessage());
+        error_log('HMS database connection failed: ' . $e->getMessage());
+        die('Database connection failed. Please try again later.');
     }
 }

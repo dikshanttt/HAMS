@@ -25,9 +25,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($name === '' || $email === '' || $phone === '' || $licenseNo === '' || $specialization === '' || $qualification === '' || $experience === '') {
         $errors[] = 'All fields are required.';
+    } elseif (strlen($name) > 150 || strlen($phone) > 20 || strlen($licenseNo) > 100 || strlen($specialization) > 150 || strlen($qualification) > 150) {
+        $errors[] = 'Please keep your details within the allowed length.';
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errors[] = 'Please enter a valid email address.';
-    } elseif (!is_numeric($experience) || (int) $experience < 0) {
+    } elseif (!preg_match('/^[0-9+() .-]{7,20}$/', $phone)) {
+        $errors[] = 'Please enter a valid phone number.';
+    } elseif (!preg_match('/^\d{1,2}$/', $experience) || (int) $experience < 0 || (int) $experience > 80) {
         $errors[] = 'Please enter a valid number of years.';
     } else {
         $db = getDB();
@@ -70,7 +74,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $db->commit();
                 set_flash('success', 'Your doctor application was submitted successfully. An administrator will review it shortly.');
-                redirect('../login.php');
+                redirect('/login.php');
             } catch (Throwable $e) {
                 $db->rollBack();
                 $errors[] = 'Unable to submit the application right now. Please try again.';

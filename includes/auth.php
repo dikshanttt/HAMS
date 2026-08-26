@@ -5,8 +5,15 @@
  */
 
 require_once __DIR__ . '/functions.php';
+require_once __DIR__ . '/../config/db.php';
 
 if (session_status() === PHP_SESSION_NONE) {
+    $isSecure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    session_set_cookie_params([
+        'httponly' => true,
+        'secure' => $isSecure,
+        'samesite' => 'Lax'
+    ]);
     session_start();
 }
 
@@ -24,6 +31,17 @@ function require_login(array $allowedRoles = []): void
     if (empty($_SESSION['user_id']) || empty($_SESSION['role'])) {
         redirect('/login.php');
     }
+
+    $stmt = getDB()->prepare('SELECT role, status, force_password_change FROM users WHERE id = ?');
+    $stmt->execute([$_SESSION['user_id']]);
+    $user = $stmt->fetch();
+
+    if (!$user || $user['status'] !== 'active' || $user['role'] !== $_SESSION['role']) {
+        logout_user();
+        redirect('/login.php');
+    }
+
+    $_SESSION['force_password_change'] = (bool)$user['force_password_change'];
 
     if (!empty($allowedRoles)
         && !in_array($_SESSION['role'], $allowedRoles, true)

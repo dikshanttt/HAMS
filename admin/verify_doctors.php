@@ -62,14 +62,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      password_hash = ?,
                      status = ?,
                      force_password_change = TRUE
-                 WHERE id = ?'
+                                 WHERE id = ?
+                                     AND status = ?'
             );
             $stmt->execute([
                 $loginId,
                 $hash,
                 'active',
-                $userId
+                $userId,
+                'pending'
             ]);
+            if ($stmt->rowCount() !== 1) {
+                throw new RuntimeException('Doctor application was already processed.');
+            }
             /*
              * Mark doctor as verified.
              */
@@ -78,13 +83,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                  SET verification_status = ?,
                      verified_at = CURRENT_TIMESTAMP,
                      verified_by_admin_id = ?
-                 WHERE user_id = ?'
+                                 WHERE user_id = ?
+                                     AND verification_status = ?'
             );
             $stmt->execute([
                 'verified',
                 current_user_id(),
-                $userId
+                $userId,
+                'pending'
             ]);
+            if ($stmt->rowCount() !== 1) {
+                throw new RuntimeException('Doctor application was already processed.');
+            }
             /*
              * Commit database changes first.
              */
@@ -93,14 +103,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * Send credentials after successful database commit.
              */
             try {
-                send_doctor_verified_email(
+                $emailSent = send_doctor_verified_email(
                     $doctor['email'],
                     $doctor['name'],
                     $loginId,
                     $tempPassword
                 );
-                $message = "Doctor approved successfully. Login ID {$loginId} has been emailed to {$doctor['email']}.";
-                $messageType = 'success';
+                if ($emailSent) {
+                    $message = "Doctor approved successfully. Login ID {$loginId} has been emailed to {$doctor['email']}.";
+                    $messageType = 'success';
+                } else {
+                    $message = "Doctor approved successfully, but the email could not be sent. Login ID: {$loginId}";
+                    $messageType = 'error';
+                }
             } catch (Throwable $e) {
                 /*
                  * Doctor is already approved even if email fails.
@@ -128,12 +143,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $db->prepare(
                 'UPDATE users
                  SET status = ?
-                 WHERE id = ?'
+                                 WHERE id = ?
+                                     AND status = ?'
             );
             $stmt->execute([
                 'rejected',
-                $userId
+                $userId,
+                'pending'
             ]);
+            if ($stmt->rowCount() !== 1) {
+                throw new RuntimeException('Doctor application was already processed.');
+            }
             /*
              * Reject the doctor application and save reason.
              */
@@ -143,27 +163,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                      rejection_reason = ?,
                      verified_at = CURRENT_TIMESTAMP,
                      verified_by_admin_id = ?
-                 WHERE user_id = ?'
+                                 WHERE user_id = ?
+                                     AND verification_status = ?'
             );
             $stmt->execute([
                 'rejected',
                 $reason,
                 current_user_id(),
-                $userId
+                $userId,
+                'pending'
             ]);
+            if ($stmt->rowCount() !== 1) {
+                throw new RuntimeException('Doctor application was already processed.');
+            }
             $db->commit();
 
             /*
              * Send rejection email after database update.
              */
             try {
-                send_doctor_rejected_email(
+                $emailSent = send_doctor_rejected_email(
                     $doctor['email'],
                     $doctor['name'],
                     $reason
                 );
-                $message = "Registration rejected for Dr. {$doctor['name']}.";
-                $messageType = 'success';
+                if ($emailSent) {
+                    $message = "Registration rejected for Dr. {$doctor['name']}.";
+                    $messageType = 'success';
+                } else {
+                    $message = "Registration rejected for Dr. {$doctor['name']}, but the email could not be sent.";
+                    $messageType = 'error';
+                }
             } catch (Throwable $e) {
                 $message = "Registration rejected for Dr. {$doctor['name']}, but the email could not be sent.";
                 $messageType = 'error';
