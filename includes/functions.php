@@ -141,6 +141,13 @@ function handle_doctor_image_upload(array $file): string
     $ext = $allowedTypes[$mime];
     $filename = bin2hex(random_bytes(16)) . '.' . $ext;
     $destDir = __DIR__ . '/../assets/uploads/doctors/';
+
+    if (!is_dir($destDir)) {
+        if (!mkdir($destDir, 0755, true) && !is_dir($destDir)) {
+            throw new Exception('Upload directory could not be created.');
+        }
+    }
+
     $destPath = $destDir . $filename;
 
     if (!move_uploaded_file($file['tmp_name'], $destPath)) {
@@ -149,4 +156,17 @@ function handle_doctor_image_upload(array $file): string
 
     // Path stored in DB, relative to web root, used in <img src="...">
     return 'assets/uploads/doctors/' . $filename;
+}
+
+/**
+ * Returns a human-readable "time ago" string for a given datetime string.
+ */
+function human_time_diff(string $datetime): string
+{
+    $diff = time() - strtotime($datetime);
+    if ($diff < 60)       return 'just now';
+    if ($diff < 3600)     return floor($diff / 60) . ' min ago';
+    if ($diff < 86400)    return floor($diff / 3600) . ' hr ago';
+    if ($diff < 604800)   return floor($diff / 86400) . ' day' . (floor($diff/86400)>1?'s':'') . ' ago';
+    return date('M j, Y', strtotime($datetime));
 }

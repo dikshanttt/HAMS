@@ -32,6 +32,18 @@ function require_login(array $allowedRoles = []): void
         redirect('/login.php');
     }
 
+    // Session idle timeout: 30 minutes (1800 seconds)
+    $maxIdleTime = 1800;
+    if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $maxIdleTime)) {
+        logout_user();
+        if (session_status() === PHP_SESSION_NONE) {
+            session_start();
+        }
+        set_flash('error', 'Your session has expired due to inactivity. Please log in again.');
+        redirect('/login.php');
+    }
+    $_SESSION['last_activity'] = time();
+
     $stmt = getDB()->prepare('SELECT role, status, force_password_change FROM users WHERE id = ?');
     $stmt->execute([$_SESSION['user_id']]);
     $user = $stmt->fetch();
@@ -105,6 +117,7 @@ function login_user(
     $_SESSION['user_id'] = $userId;
     $_SESSION['role'] = $role;
     $_SESSION['force_password_change'] = $forcePasswordChange;
+    $_SESSION['last_activity'] = time();
 }
 
 

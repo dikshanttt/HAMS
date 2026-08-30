@@ -1,0 +1,9 @@
+/vendor/
+.env
+.env.*
+!.env.example
+/assets/uploads/doctors/*
+!/assets/uploads/doctors/.gitkeep
+*.log
+.DS_Store
+Thumbs.db

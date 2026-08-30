@@ -37,6 +37,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $errors[] = 'Please select a valid gender.';
     } elseif (strlen($password) < 8) {
         $errors[] = 'Password must be at least 8 characters long.';
+    } elseif (strlen($password) > 72) {
+        $errors[] = 'Password cannot exceed 72 characters.';
     } elseif ($password !== $confirmPassword) {
         $errors[] = 'Passwords do not match.';
     } else {
@@ -72,66 +74,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Patient Registration | HAMS</title>
-    <link rel="stylesheet" href="../assets/css/register.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../assets/css/register.css?v=<?= filemtime('../assets/css/register.css'); ?>">
 </head>
 <body>
+    <header class="auth-header">
+        <a class="brand" href="../index.php">
+            <span class="brand-icon">✚</span>
+            <span class="brand-text">HAMS<span class="brand-sub">Care</span></span>
+        </a>
+        <a class="back-link" href="account-type.php">← Back to Selection</a>
+    </header>
+
     <main class="page-shell">
         <section class="form-panel">
-            <div class="form-card">
-                <div class="form-header">
-                    <p class="eyebrow">Patient Registration</p>
-                    <h1>Create your patient account</h1>
-                    <p>Enter your details to book appointments and manage your healthcare journey.</p>
-                </div>
+            <div class="form-header">
+                <span class="eyebrow">Patient Account</span>
+                <h1>Create your patient profile</h1>
+                <p>Enter your details to instantly book hospital appointments, avoid waiting room lines, and track your visits.</p>
+            </div>
 
-                <?php foreach ($errors as $error): ?>
-                    <div class="error-message"><?= clean($error) ?></div>
-                <?php endforeach; ?>
+            <?php foreach ($errors as $error): ?>
+                <div class="error-message"><?= clean($error) ?></div>
+            <?php endforeach; ?>
 
-                <form id="patientForm" class="register-form" method="POST" novalidate>
-                    <?= csrf_field() ?>
+            <form id="patientForm" class="register-form" method="POST" novalidate>
+                <?= csrf_field() ?>
+                
+                <div class="form-grid-2">
                     <div class="form-row">
-                        <label for="patientName">Full Name</label>
-                        <input id="patientName" name="patientName" type="text" value="<?= clean($name) ?>" placeholder="Jane Doe" required>
+                        <label for="patientName">Full Legal Name</label>
+                        <input id="patientName" name="patientName" type="text" value="<?= clean($name) ?>" placeholder="e.g. Jane Doe" required autofocus>
                     </div>
+
                     <div class="form-row">
                         <label for="patientEmail">Email Address</label>
-                        <input id="patientEmail" name="patientEmail" type="email" value="<?= clean($email) ?>" placeholder="jane@example.com" required>
+                        <input id="patientEmail" name="patientEmail" type="email" value="<?= clean($email) ?>" placeholder="e.g. jane@example.com" required>
                     </div>
+                </div>
+
+                <div class="form-grid-2">
                     <div class="form-row">
                         <label for="patientPhone">Phone Number</label>
-                        <input id="patientPhone" name="patientPhone" type="tel" value="<?= clean($phone) ?>" placeholder="(123) 456-7890" required>
+                        <input id="patientPhone" name="patientPhone" type="tel" value="<?= clean($phone) ?>" placeholder="e.g. +977 9800000000" required>
                     </div>
-                    <div class="form-row form-grid-2">
-                        <div>
-                            <label for="patientDob">Date of Birth</label>
-                            <input id="patientDob" name="patientDob" type="date" value="<?= clean($dob) ?>" required>
-                        </div>
-                        <div>
-                            <label for="patientGender">Gender</label>
-                            <select id="patientGender" name="patientGender" required>
-                                <option value="">Select gender</option>
-                                <option value="female" <?= ($gender === 'female') ? 'selected' : '' ?>>Female</option>
-                                <option value="male" <?= ($gender === 'male') ? 'selected' : '' ?>>Male</option>
-                                <option value="other" <?= ($gender === 'other') ? 'selected' : '' ?>>Other</option>
-                                <option value="prefer_not" <?= ($gender === 'prefer_not') ? 'selected' : '' ?>>Prefer not to say</option>
-                            </select>
-                        </div>
-                    </div>
+
                     <div class="form-row">
-                        <label for="patientPassword">Password</label>
-                        <input id="patientPassword" name="patientPassword" type="password" placeholder="Create a password" required>
+                        <label for="patientDob">Date of Birth</label>
+                        <input id="patientDob" name="patientDob" type="date" value="<?= clean($dob) ?>" required>
                     </div>
+                </div>
+
+                <div class="form-row">
+                    <label for="patientGender">Gender</label>
+                    <select id="patientGender" name="patientGender" required>
+                        <option value="">Select gender identity</option>
+                        <option value="female" <?= ($gender === 'female') ? 'selected' : '' ?>>Female</option>
+                        <option value="male" <?= ($gender === 'male') ? 'selected' : '' ?>>Male</option>
+                        <option value="other" <?= ($gender === 'other') ? 'selected' : '' ?>>Other</option>
+                        <option value="prefer_not" <?= ($gender === 'prefer_not') ? 'selected' : '' ?>>Prefer not to say</option>
+                    </select>
+                </div>
+
+                <div class="form-grid-2">
+                    <div class="form-row">
+                        <label for="patientPassword">Password (min 8 characters)</label>
+                        <div class="input-container password-container">
+                            <input id="patientPassword" name="patientPassword" type="password" placeholder="Create a secure password" required>
+                        </div>
+                    </div>
+
                     <div class="form-row">
                         <label for="patientConfirmPassword">Confirm Password</label>
-                        <input id="patientConfirmPassword" name="patientConfirmPassword" type="password" placeholder="Confirm password" required>
+                        <div class="input-container password-container">
+                            <input id="patientConfirmPassword" name="patientConfirmPassword" type="password" placeholder="Re-enter your password" required>
+                        </div>
                     </div>
+                </div>
 
-                    <button type="submit" class="btn btn-primary btn-full">Create Patient Account</button>
-                </form>
+                <div class="info-banner">
+                    <span>🔒 Your personal healthcare data is protected and kept strictly confidential.</span>
+                </div>
 
-                <p class="form-footer">Already have an account? <a href="../login.php">Login</a></p>
-            </div>
+                <button type="submit" class="btn btn-primary btn-full btn-lg">Complete Registration & Book</button>
+            </form>
+
+            <p class="form-footer">Already registered? <a href="../login.php">Sign In to Dashboard</a></p>
         </section>
     </main>
 
