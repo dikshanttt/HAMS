@@ -170,3 +170,27 @@ function human_time_diff(string $datetime): string
     if ($diff < 604800)   return floor($diff / 86400) . ' day' . (floor($diff/86400)>1?'s':'') . ' ago';
     return date('M j, Y', strtotime($datetime));
 }
+
+/**
+ * Formats time string (HH:MM:SS or HH:MM) into clean readable format (e.g. 02:30 PM).
+ */
+function format_time_slot(string $time): string
+{
+    $ts = strtotime($time);
+    return $ts !== false ? date('h:i A', $ts) : $time;
+}
+
+/**
+ * Generates a unique appointment token (e.g. TK-20260831-4821).
+ */
+function generate_appointment_token(PDO $db): string
+{
+    do {
+        $token = 'TK-' . date('Ymd') . '-' . random_int(1000, 9999);
+        $stmt = $db->prepare('SELECT 1 FROM appointments WHERE appointment_token = ?');
+        $stmt->execute([$token]);
+    } while ($stmt->fetch());
+
+    return $token;
+}
+

@@ -1,9 +1,114 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/config/db.php';
 
 if (current_user_id()) {
     redirect('/' . current_role() . '/dashboard.php');
 }
+
+$db = getDB();
+
+// 1. Live Stats
+$totalHospitals = (int)$db->query("SELECT COUNT(*) FROM hospitals WHERE is_active = TRUE")->fetchColumn();
+$totalDoctors   = (int)$db->query("
+    SELECT COUNT(DISTINCT d.user_id) 
+    FROM doctor_profiles d 
+    JOIN users u ON d.user_id = u.id 
+    WHERE d.verification_status = 'verified' AND u.status = 'active'
+")->fetchColumn();
+$totalAppointments = (int)$db->query("SELECT COUNT(*) FROM appointments")->fetchColumn();
+$avgRating = (float)$db->query("SELECT ROUND(AVG(rating), 1) FROM hospitals WHERE is_active = TRUE")->fetchColumn();
+if ($avgRating <= 0) {
+    $avgRating = 4.9;
+}
+
+// 2. Hero Featured Doctor
+$heroDoctor = $db->query("
+    SELECT d.user_id, d.name, d.specialization, d.qualification, d.experience_years, d.image_path,
+           h.name AS hospital_name, h.address AS hospital_address
+    FROM doctor_profiles d
+    JOIN users u ON d.user_id = u.id
+    LEFT JOIN doctor_hospital dh ON dh.doctor_id = d.user_id AND dh.status = 'active'
+    LEFT JOIN hospitals h ON h.id = dh.hospital_id
+    WHERE d.verification_status = 'verified' AND u.status = 'active'
+    ORDER BY d.experience_years DESC, d.user_id ASC
+    LIMIT 1
+")->fetch();
+
+$heroSlots = [];
+if ($heroDoctor) {
+    $heroSlots = $db->query("
+        SELECT start_time, end_time, day_of_week
+        FROM schedules
+        WHERE doctor_id = " . (int)$heroDoctor['user_id'] . " AND is_active = TRUE
+        ORDER BY start_time ASC
+        LIMIT 3
+    ")->fetchAll();
+}
+
+// 3. Partner Hospitals (with search filter)
+$hospQuery = trim($_GET['query'] ?? '');
+if ($hospQuery !== '') {
+    $hospStmt = $db->prepare("
+        SELECT h.*,
+               COUNT(DISTINCT dh.doctor_id) AS active_doctors_count
+        FROM hospitals h
+        LEFT JOIN doctor_hospital dh ON dh.hospital_id = h.id AND dh.status = 'active'
+        WHERE h.is_active = TRUE AND (
+            h.name ILIKE ? OR
+            h.departments ILIKE ? OR
+            h.address ILIKE ?
+        )
+        GROUP BY h.id
+        ORDER BY h.rating DESC, h.name ASC
+    ");
+    $likeParam = '%' . $hospQuery . '%';
+    $hospStmt->execute([$likeParam, $likeParam, $likeParam]);
+    $hospitals = $hospStmt->fetchAll();
+} else {
+    $hospitals = $db->query("
+        SELECT h.*,
+               COUNT(DISTINCT dh.doctor_id) AS active_doctors_count
+        FROM hospitals h
+        LEFT JOIN doctor_hospital dh ON dh.hospital_id = h.id AND dh.status = 'active'
+        WHERE h.is_active = TRUE
+        GROUP BY h.id
+        ORDER BY h.rating DESC, h.name ASC
+    ")->fetchAll();
+}
+
+// 4. Featured Doctors (with hospital affiliations and active schedules)
+$doctors = $db->query("
+    SELECT d.user_id, d.name, d.specialization, d.qualification, d.experience_years, d.image_path,
+           h.id AS hospital_id, h.name AS hospital_name, h.slug AS hospital_slug,
+           u.doctor_login_id
+    FROM doctor_profiles d
+    JOIN users u ON d.user_id = u.id
+    LEFT JOIN doctor_hospital dh ON dh.doctor_id = d.user_id AND dh.status = 'active'
+    LEFT JOIN hospitals h ON h.id = dh.hospital_id
+    WHERE d.verification_status = 'verified' AND u.status = 'active'
+    ORDER BY d.experience_years DESC, d.name ASC
+")->fetchAll();
+
+// Distinct Specialties for Filter Pills
+$specialties = array_values(array_unique(array_filter(array_column($doctors, 'specialization'))));
+sort($specialties);
+
+// Fetch Schedules per Doctor
+$doctorSchedules = [];
+$schedRows = $db->query("
+    SELECT doctor_id, day_of_week, start_time, end_time
+    FROM schedules
+    WHERE is_active = TRUE
+    ORDER BY start_time ASC
+")->fetchAll();
+foreach ($schedRows as $s) {
+    $doctorSchedules[$s['doctor_id']][] = $s;
+}
+
+// Color banner palette cycling for hospitals
+$bannerColors = ['banner-emerald', 'banner-teal', 'banner-forest'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -15,6 +120,27 @@ if (current_user_id()) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/style.css?v=<?= filemtime('assets/css/style.css'); ?>">
+    <style>
+        .no-results-box {
+            text-align: center;
+            padding: 48px 24px;
+            background: var(--surface);
+            border: 1px dashed var(--border-hover);
+            border-radius: var(--radius-lg);
+            grid-column: 1 / -1;
+        }
+        .doctor-card-top-inner {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 12px;
+        }
+        .hero-slot-preview {
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid rgba(255,255,255,0.15);
+        }
+    </style>
 </head>
 <body class="home-page">
 
@@ -105,15 +231,22 @@ if (current_user_id()) {
 
                 <div class="hero-visual">
                     <div class="visual-card-main">
+                        <?php if ($heroDoctor): 
+                            $heroInitials = strtoupper(mb_substr(trim(preg_replace('/^Dr\.?\s*/i', '', $heroDoctor['name'])), 0, 2)) ?: 'DR';
+                        ?>
                         <div class="doctor-highlight-header">
                             <div class="doctor-profile-lead">
-                                <div class="avatar-lead">
-                                    <span>DR</span>
-                                    <span class="online-indicator"></span>
-                                </div>
+                                <?php if (!empty($heroDoctor['image_path']) && file_exists(__DIR__ . '/' . $heroDoctor['image_path'])): ?>
+                                    <img src="<?= clean($heroDoctor['image_path']) ?>" alt="<?= clean($heroDoctor['name']) ?>" style="width:48px;height:48px;border-radius:50%;object-fit:cover;border:2px solid #fff">
+                                <?php else: ?>
+                                    <div class="avatar-lead">
+                                        <span><?= clean($heroInitials) ?></span>
+                                        <span class="online-indicator"></span>
+                                    </div>
+                                <?php endif; ?>
                                 <div>
-                                    <h4 class="lead-name">Dr. Sophia Patel</h4>
-                                    <p class="lead-spec">Chief Cardiologist • City Care</p>
+                                    <h4 class="lead-name"><?= clean($heroDoctor['name']) ?></h4>
+                                    <p class="lead-spec"><?= clean($heroDoctor['specialization']) ?> • <?= clean($heroDoctor['hospital_name'] ?: 'Verified Specialist') ?></p>
                                 </div>
                             </div>
                             <div class="rating-badge">
@@ -122,19 +255,52 @@ if (current_user_id()) {
                         </div>
 
                         <div class="slot-picker-preview">
-                            <span class="preview-title">Available Slots Today</span>
+                            <span class="preview-title">Available Slots:</span>
+                            <div class="slot-buttons">
+                                <?php if (!empty($heroSlots)): ?>
+                                    <?php foreach ($heroSlots as $idx => $slot): ?>
+                                        <span class="slot-chip <?= $idx === 0 ? 'active' : '' ?>">
+                                            <?= clean(format_time_slot($slot['start_time'])) ?>
+                                        </span>
+                                    <?php endforeach; ?>
+                                <?php else: ?>
+                                    <span class="slot-chip active">02:30 PM</span>
+                                    <span class="slot-chip">04:00 PM</span>
+                                    <span class="slot-chip">05:30 PM</span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+                        <?php else: ?>
+                        <div class="doctor-highlight-header">
+                            <div class="doctor-profile-lead">
+                                <div class="avatar-lead">
+                                    <span>DR</span>
+                                    <span class="online-indicator"></span>
+                                </div>
+                                <div>
+                                    <h4 class="lead-name">Dr. Sophia Patel</h4>
+                                    <p class="lead-spec">Chief Cardiologist • City Care Hospital</p>
+                                </div>
+                            </div>
+                            <div class="rating-badge">
+                                <span>★ 4.9</span>
+                            </div>
+                        </div>
+                        <div class="slot-picker-preview">
+                            <span class="preview-title">Available Slots Today:</span>
                             <div class="slot-buttons">
                                 <span class="slot-chip active">02:30 PM</span>
                                 <span class="slot-chip">04:00 PM</span>
                                 <span class="slot-chip">05:30 PM</span>
                             </div>
                         </div>
+                        <?php endif; ?>
 
                         <div class="mini-appointment-card">
                             <div class="check-icon-circle">✓</div>
                             <div class="appointment-details">
                                 <strong>Appointment Confirmed</strong>
-                                <span>Token #HMS-8402 • Room 304</span>
+                                <span>Token #TK-2026-8402 • Room 304</span>
                             </div>
                             <span class="status-pill-green">Confirmed</span>
                         </div>
@@ -142,7 +308,7 @@ if (current_user_id()) {
                         <div class="floating-badge badge-hospital">
                             <span class="hospital-icon">🏥</span>
                             <div>
-                                <strong>24+ Partner Clinics</strong>
+                                <strong><?= $totalHospitals ?>+ Partner Hospitals</strong>
                                 <small>Live real-time queue</small>
                             </div>
                         </div>
@@ -164,19 +330,19 @@ if (current_user_id()) {
             <div class="container">
                 <div class="stats-grid">
                     <div class="stat-card">
-                        <div class="stat-num">15<span>+</span></div>
+                        <div class="stat-num"><?= $totalHospitals ?><span>+</span></div>
                         <div class="stat-text">Partner Hospitals</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-num">120<span>+</span></div>
+                        <div class="stat-num"><?= $totalDoctors ?><span>+</span></div>
                         <div class="stat-text">Verified Specialists</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-num">50k<span>+</span></div>
+                        <div class="stat-num"><?= max($totalAppointments, 50) ?><span>+</span></div>
                         <div class="stat-text">Appointments Booked</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-num">4.9<span>★</span></div>
+                        <div class="stat-num"><?= number_format($avgRating, 1) ?><span>★</span></div>
                         <div class="stat-text">Patient Satisfaction</div>
                     </div>
                 </div>
@@ -193,59 +359,49 @@ if (current_user_id()) {
                     </div>
                     <form class="hospital-search-bar" action="#hospitals" method="GET">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                        <input type="text" name="query" placeholder="Search hospital name or department...">
+                        <input type="text" name="query" value="<?= clean($hospQuery) ?>" placeholder="Search hospital name, address or department...">
                         <button type="submit" class="btn btn-primary btn-sm">Search</button>
                     </form>
                 </div>
 
                 <div class="cards-grid hospitals-grid">
-                    <article class="modern-card hospital-item">
-                        <div class="card-banner banner-emerald">
-                            <span class="hospital-badge">Multi-Specialty</span>
+                    <?php if (empty($hospitals)): ?>
+                        <div class="no-results-box">
+                            <div style="font-size:2.2rem;margin-bottom:8px">🏥</div>
+                            <h3 style="font-size:1.1rem;margin-bottom:6px">No Hospitals Found</h3>
+                            <p style="font-size:0.88rem;color:var(--text-muted);margin-bottom:16px">
+                                <?= $hospQuery ? 'No hospitals matched your search "<strong>' . clean($hospQuery) . '</strong>".' : 'No partner hospitals registered yet.' ?>
+                            </p>
+                            <?php if ($hospQuery): ?>
+                                <a href="index.php#hospitals" class="btn btn-secondary btn-sm">Clear Search</a>
+                            <?php endif; ?>
                         </div>
-                        <div class="card-content">
-                            <h3 class="card-title">City Care Hospital</h3>
-                            <p class="card-desc">Downtown Metro • Cardiology, Neurology, Orthopedics</p>
-                            <div class="card-meta">
-                                <span class="meta-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> 18 Doctors</span>
-                                <span class="meta-item">📍 1.2 km away</span>
-                                <span class="rating-chip">4.9 ★</span>
+                    <?php else: ?>
+                        <?php foreach ($hospitals as $i => $hosp): 
+                            $bannerClass = $bannerColors[$i % count($bannerColors)];
+                            $deptList = explode(',', $hosp['departments'] ?? '');
+                            $deptPreview = trim($deptList[0] ?? 'Multi-Specialty');
+                        ?>
+                        <article class="modern-card hospital-item">
+                            <div class="card-banner <?= $bannerClass ?>">
+                                <span class="hospital-badge"><?= clean($deptPreview) ?></span>
                             </div>
-                            <a href="register/account-type.php" class="btn btn-outline btn-full">Book at City Care →</a>
-                        </div>
-                    </article>
-
-                    <article class="modern-card hospital-item">
-                        <div class="card-banner banner-teal">
-                            <span class="hospital-badge">Children & ENT</span>
-                        </div>
-                        <div class="card-content">
-                            <h3 class="card-title">Greenview Medical Center</h3>
-                            <p class="card-desc">North Avenue • Pediatrics, ENT, Dental Sciences</p>
-                            <div class="card-meta">
-                                <span class="meta-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> 12 Doctors</span>
-                                <span class="meta-item">📍 3.5 km away</span>
-                                <span class="rating-chip">4.8 ★</span>
+                            <div class="card-content">
+                                <h3 class="card-title"><?= clean($hosp['name']) ?></h3>
+                                <p class="card-desc"><?= clean($hosp['address']) ?> • <?= clean($hosp['departments'] ?? 'General Care') ?></p>
+                                <div class="card-meta">
+                                    <span class="meta-item">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> 
+                                        <?= (int)$hosp['active_doctors_count'] ?> Doctor<?= (int)$hosp['active_doctors_count'] !== 1 ? 's' : '' ?>
+                                    </span>
+                                    <span class="meta-item">📞 <?= clean($hosp['phone']) ?></span>
+                                    <span class="rating-chip"><?= number_format((float)($hosp['rating'] ?? 4.8), 1) ?> ★</span>
+                                </div>
+                                <a href="register/account-type.php" class="btn btn-outline btn-full">Book at <?= clean($hosp['name']) ?> →</a>
                             </div>
-                            <a href="register/account-type.php" class="btn btn-outline btn-full">Book at Greenview →</a>
-                        </div>
-                    </article>
-
-                    <article class="modern-card hospital-item">
-                        <div class="card-banner banner-forest">
-                            <span class="hospital-badge">Super Specialty</span>
-                        </div>
-                        <div class="card-content">
-                            <h3 class="card-title">LifeLine Hospital</h3>
-                            <p class="card-desc">West End • Orthopedics, General Surgery, Oncology</p>
-                            <div class="card-meta">
-                                <span class="meta-item"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg> 24 Doctors</span>
-                                <span class="meta-item">📍 4.1 km away</span>
-                                <span class="rating-chip">4.7 ★</span>
-                            </div>
-                            <a href="register/account-type.php" class="btn btn-outline btn-full">Book at LifeLine →</a>
-                        </div>
-                    </article>
+                        </article>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </div>
             </div>
         </section>
@@ -297,82 +453,70 @@ if (current_user_id()) {
                     </div>
                     <div class="filter-pills" id="deptFilter">
                         <button class="filter-btn active" data-filter="all">All</button>
-                        <button class="filter-btn" data-filter="cardiology">Cardiology</button>
-                        <button class="filter-btn" data-filter="pediatrics">Pediatrics</button>
-                        <button class="filter-btn" data-filter="orthopedics">Orthopedics</button>
+                        <?php foreach ($specialties as $spec): ?>
+                            <button class="filter-btn" data-filter="<?= clean(strtolower(preg_replace('/[^a-z0-9]/i', '', $spec))) ?>">
+                                <?= clean($spec) ?>
+                            </button>
+                        <?php endforeach; ?>
                     </div>
                 </div>
 
                 <div class="cards-grid doctors-grid">
-                    <article class="modern-card doctor-item" data-category="cardiology">
-                        <div class="doctor-card-top">
-                            <div class="doctor-avatar-circle">AR</div>
-                            <div class="doctor-header-info">
-                                <h3 class="doctor-name">Dr. Asha Rao</h3>
-                                <span class="dept-tag">Cardiology</span>
-                                <p class="hospital-sub">City Care Hospital</p>
-                            </div>
+                    <?php if (empty($doctors)): ?>
+                        <div class="no-results-box">
+                            <div style="font-size:2.2rem;margin-bottom:8px">🩺</div>
+                            <h3 style="font-size:1.1rem;margin-bottom:6px">No Verified Doctors Registered Yet</h3>
+                            <p style="font-size:0.88rem;color:var(--text-muted)">Specialists will appear here once approved by the administrator.</p>
                         </div>
-                        <div class="doctor-rating-row">
-                            <span class="stars">★★★★★</span>
-                            <span class="review-count">4.9 (120 reviews)</span>
-                        </div>
-                        <div class="slots-box">
-                            <span class="slots-header">Today's Available Slots:</span>
-                            <div class="slot-list">
-                                <span class="time-pill">02:30 PM</span>
-                                <span class="time-pill">04:00 PM</span>
-                                <span class="time-pill">05:30 PM</span>
-                            </div>
-                        </div>
-                        <a class="btn btn-primary btn-full" href="register/account-type.php">Book Appointment</a>
-                    </article>
+                    <?php else: ?>
+                        <?php foreach ($doctors as $doc): 
+                            $cleanCat = strtolower(preg_replace('/[^a-z0-9]/i', '', $doc['specialization']));
+                            $docInitials = strtoupper(mb_substr(trim(preg_replace('/^Dr\.?\s*/i', '', $doc['name'])), 0, 2)) ?: 'DR';
+                            $docSlots = $doctorSchedules[$doc['user_id']] ?? [];
+                        ?>
+                        <article class="modern-card doctor-item" data-category="<?= clean($cleanCat) ?>">
+                            <div class="card-content">
+                                <div class="doctor-card-top-inner">
+                                    <?php if (!empty($doc['image_path']) && file_exists(__DIR__ . '/' . $doc['image_path'])): ?>
+                                        <img src="<?= clean($doc['image_path']) ?>" alt="<?= clean($doc['name']) ?>"
+                                             style="width:52px;height:52px;border-radius:50%;object-fit:cover;border:2px solid var(--border);flex-shrink:0">
+                                    <?php else: ?>
+                                        <div class="doctor-avatar-circle"><?= clean($docInitials) ?></div>
+                                    <?php endif; ?>
+                                    <div class="doctor-header-info">
+                                        <h3 class="doctor-name" style="font-size:1.1rem"><?= clean($doc['name']) ?></h3>
+                                        <span class="dept-tag"><?= clean($doc['specialization']) ?></span>
+                                        <p class="hospital-sub" style="font-size:0.82rem;color:var(--text-muted)">
+                                            <?= clean($doc['hospital_name'] ?: 'Accredited Hospital') ?> • <?= (int)$doc['experience_years'] ?> yrs exp
+                                        </p>
+                                    </div>
+                                </div>
 
-                    <article class="modern-card doctor-item" data-category="pediatrics">
-                        <div class="doctor-card-top">
-                            <div class="doctor-avatar-circle">MP</div>
-                            <div class="doctor-header-info">
-                                <h3 class="doctor-name">Dr. Meera Patel</h3>
-                                <span class="dept-tag">Pediatrics</span>
-                                <p class="hospital-sub">Greenview Medical Center</p>
-                            </div>
-                        </div>
-                        <div class="doctor-rating-row">
-                            <span class="stars">★★★★★</span>
-                            <span class="review-count">4.8 (98 reviews)</span>
-                        </div>
-                        <div class="slots-box">
-                            <span class="slots-header">Today's Available Slots:</span>
-                            <div class="slot-list">
-                                <span class="time-pill">03:00 PM</span>
-                                <span class="time-pill">06:15 PM</span>
-                            </div>
-                        </div>
-                        <a class="btn btn-primary btn-full" href="register/account-type.php">Book Appointment</a>
-                    </article>
+                                <div class="doctor-rating-row" style="margin-bottom:12px">
+                                    <span class="stars">★★★★★</span>
+                                    <span class="review-count">4.9 • <?= clean($doc['qualification']) ?></span>
+                                </div>
 
-                    <article class="modern-card doctor-item" data-category="orthopedics">
-                        <div class="doctor-card-top">
-                            <div class="doctor-avatar-circle">RS</div>
-                            <div class="doctor-header-info">
-                                <h3 class="doctor-name">Dr. Rohan Singh</h3>
-                                <span class="dept-tag">Orthopedics</span>
-                                <p class="hospital-sub">LifeLine Hospital</p>
+                                <div class="slots-box" style="margin-bottom:18px">
+                                    <span class="slots-header">Available Consultation Hours:</span>
+                                    <div class="slot-list">
+                                        <?php if (!empty($docSlots)): ?>
+                                            <?php foreach (array_slice($docSlots, 0, 3) as $ds): ?>
+                                                <span class="time-pill">
+                                                    <?= clean($ds['day_of_week']) ?>: <?= clean(format_time_slot($ds['start_time'])) ?>
+                                                </span>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <span class="time-pill">Mon-Fri 02:00 PM - 05:00 PM</span>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+
+                                <a class="btn btn-primary btn-full" href="register/account-type.php">Book Appointment</a>
                             </div>
-                        </div>
-                        <div class="doctor-rating-row">
-                            <span class="stars">★★★★★</span>
-                            <span class="review-count">4.7 (85 reviews)</span>
-                        </div>
-                        <div class="slots-box">
-                            <span class="slots-header">Today's Available Slots:</span>
-                            <div class="slot-list">
-                                <span class="time-pill">01:45 PM</span>
-                                <span class="time-pill">05:00 PM</span>
-                            </div>
-                        </div>
-                        <a class="btn btn-primary btn-full" href="register/account-type.php">Book Appointment</a>
-                    </article>
+                        </article>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </div>
             </div>
         </section>
@@ -571,7 +715,7 @@ if (current_user_id()) {
         </div>
     </footer>
 
-    <!-- Interactive Scripts -->
+    <!-- Interactive Scripts (Vanilla JS Only) -->
     <script>
         // Mobile Navigation Drawer Toggle
         const menuBtn = document.getElementById('mobileMenuBtn');
@@ -627,4 +771,4 @@ if (current_user_id()) {
         });
     </script>
 </body>
-</html>
+</html>

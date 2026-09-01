@@ -9,13 +9,16 @@ $db  = getDB();
 $uid = current_user_id();
 
 $stmt = $db->prepare(
-    'SELECT u.doctor_login_id, u.email,
+    "SELECT u.doctor_login_id, u.email,
             d.name, d.specialization, d.license_no,
             d.qualification, d.experience_years, d.image_path,
-            d.verification_status
+            d.verification_status,
+            h.name AS hospital_name
      FROM users u
      LEFT JOIN doctor_profiles d ON u.id = d.user_id
-     WHERE u.id = ?'
+     LEFT JOIN doctor_hospital dh ON dh.doctor_id = d.user_id AND dh.status = 'active'
+     LEFT JOIN hospitals h ON h.id = dh.hospital_id
+     WHERE u.id = ?"
 );
 $stmt->execute([$uid]);
 $doc = $stmt->fetch();
@@ -26,22 +29,26 @@ $spec     = $doc['specialization']  ?? 'Specialist';
 $qual     = $doc['qualification']   ?? 'MBBS, MD';
 $exp      = (int)($doc['experience_years'] ?? 0);
 $license  = $doc['license_no']      ?? 'N/A';
+$hospName = $doc['hospital_name']   ?? 'Accredited Hospital';
 $rawInit  = preg_replace('/^Dr\.?\s*/i', '', $docName);
 $initials = strtoupper(mb_substr(trim($rawInit), 0, 2)) ?: 'DR';
 
 $flash = get_flash();
 
-// ---- Simulated queue data (replace with real DB query when appointments table exists) ----
-$queue = [
-    ['id'=>'401','patient'=>'Ramesh Sharma','age'=>42,'gender'=>'M','slot'=>'01:30 PM','phone'=>'+977 9841234567','status'=>'done'],
-    ['id'=>'404','patient'=>'Pooja Thapa',  'age'=>29,'gender'=>'F','slot'=>'02:00 PM','phone'=>'+977 9812345678','status'=>'done'],
-    ['id'=>'408','patient'=>'Sita Adhikari','age'=>35,'gender'=>'F','slot'=>'02:30 PM','phone'=>'+977 9801122334','status'=>'current'],
-    ['id'=>'412','patient'=>'Binod KC',     'age'=>54,'gender'=>'M','slot'=>'03:15 PM','phone'=>'+977 9849988776','status'=>'waiting'],
-    ['id'=>'416','patient'=>'Anita Gurung', 'age'=>24,'gender'=>'F','slot'=>'04:00 PM','phone'=>'+977 9823456789','status'=>'scheduled'],
-    ['id'=>'421','patient'=>'Suresh Lamsal','age'=>61,'gender'=>'M','slot'=>'04:45 PM','phone'=>'+977 9867543210','status'=>'scheduled'],
-];
-$done    = count(array_filter($queue, fn($r) => $r['status'] === 'done'));
-$waiting = count(array_filter($queue, fn($r) => in_array($r['status'], ['waiting','current'])));
+// Query real appointments for this doctor from database
+$stmtQueue = $db->prepare("
+    SELECT a.id, a.appointment_token, a.slot_time, a.appointment_date, a.status, a.reason,
+           p.name AS patient_name, p.gender, p.phone, p.date_of_birth
+    FROM appointments a
+    JOIN patient_profiles p ON a.patient_id = p.user_id
+    WHERE a.doctor_id = ?
+    ORDER BY a.appointment_date ASC, a.slot_time ASC
+");
+$stmtQueue->execute([$uid]);
+$queue = $stmtQueue->fetchAll();
+
+$done    = count(array_filter($queue, fn($r) => $r['status'] === 'completed'));
+$waiting = count(array_filter($queue, fn($r) => in_array($r['status'], ['pending', 'confirmed', 'in_consultation'])));
 $total   = count($queue);
 ?>
 <!DOCTYPE html>
@@ -104,7 +111,7 @@ $total   = count($queue);
             <div>
                 <h1 style="font-size:1.5rem;margin-bottom:4px"><?= clean($docName) ?></h1>
                 <p style="color:var(--text-muted);font-size:.9rem;margin-bottom:6px">
-                    <?= clean($qual) ?> &bull; <?= $exp ?> years clinical experience
+                    <?= clean($qual) ?> &bull; <?= $exp ?> years clinical experience &bull; <?= clean($hospName) ?>
                 </p>
                 <div class="doctor-meta-tags">
                     <span class="badge-tag verified">Verified ✓</span>
@@ -126,24 +133,24 @@ $total   = count($queue);
     <!-- ===== METRICS ===== -->
     <section class="doctor-metrics-row" style="margin-bottom:30px">
         <article class="metric-card">
-            <div class="metric-card-label">Today's Schedule</div>
+            <div class="metric-card-label">Upcoming Visits</div>
             <div class="metric-card-num"><?= $total ?></div>
-            <div class="metric-card-sub">appointments booked</div>
+            <div class="metric-card-sub">appointments scheduled</div>
         </article>
         <article class="metric-card">
             <div class="metric-card-label">Waiting / In Consult</div>
             <div class="metric-card-num stat-color-warn" id="waitCount"><?= $waiting ?></div>
-            <div class="metric-card-sub">patients in lobby/room</div>
+            <div class="metric-card-sub">patients in queue</div>
         </article>
         <article class="metric-card">
-            <div class="metric-card-label">Completed Today</div>
+            <div class="metric-card-label">Completed</div>
             <div class="metric-card-num stat-color-ok" id="doneCount"><?= $done ?></div>
             <div class="metric-card-sub">consultations finished</div>
         </article>
         <article class="metric-card">
             <div class="metric-card-label">Avg Duration</div>
-            <div class="metric-card-num stat-color-pri">14<span style="font-size:1rem">min</span></div>
-            <div class="metric-card-sub">per consultation today</div>
+            <div class="metric-card-num stat-color-pri">15<span style="font-size:1rem">min</span></div>
+            <div class="metric-card-sub">per scheduled consultation</div>
         </article>
     </section>
 
@@ -152,18 +159,25 @@ $total   = count($queue);
         <div class="section-head flex-between" style="margin-bottom:20px">
             <div>
                 <span class="section-tag">Live Queue</span>
-                <h2 class="section-title" style="font-size:1.45rem">Today's Patient Consultation Queue</h2>
+                <h2 class="section-title" style="font-size:1.45rem">Patient Consultation Queue</h2>
             </div>
             <button class="btn btn-outline btn-sm" onclick="location.reload()">↻&nbsp;Refresh</button>
         </div>
 
+        <?php if (empty($queue)): ?>
+            <div style="background:var(--bg);border:1px dashed var(--border-hover);border-radius:var(--radius-md);padding:40px 20px;text-align:center">
+                <div style="font-size:2.2rem;margin-bottom:10px">📅</div>
+                <h3 style="font-size:1.05rem;margin-bottom:6px">No Appointments Booked Yet</h3>
+                <p style="font-size:0.86rem;color:var(--text-muted)">Patient consultations booked for your department will appear here automatically.</p>
+            </div>
+        <?php else: ?>
         <div class="data-table-wrap">
             <table class="data-table">
                 <thead>
                     <tr>
                         <th>Token</th>
                         <th>Patient</th>
-                        <th>Time Slot</th>
+                        <th>Date & Time</th>
                         <th>Contact</th>
                         <th>Status</th>
                         <th style="text-align:right">Action</th>
@@ -171,20 +185,26 @@ $total   = count($queue);
                 </thead>
                 <tbody id="queueTbody">
                 <?php foreach ($queue as $row):
-                    $isCurrent  = $row['status'] === 'current';
-                    $isDone     = $row['status'] === 'done';
-                    $isWaiting  = $row['status'] === 'waiting';
-                    $isScheduled= $row['status'] === 'scheduled';
+                    $isCurrent  = $row['status'] === 'in_consultation';
+                    $isDone     = $row['status'] === 'completed';
+                    $isWaiting  = in_array($row['status'], ['pending', 'confirmed']);
                     $badgeClass = $isDone ? 'done' : ($isCurrent ? 'consulting' : 'waiting');
-                    $badgeLabel = $isDone ? 'Completed ✓' : ($isCurrent ? 'In Room 304' : ($isWaiting ? 'In Lobby' : 'Scheduled'));
+                    $badgeLabel = $isDone ? 'Completed ✓' : ($isCurrent ? 'In Consultation' : ucfirst(clean($row['status'])));
+                    
+                    $age = '—';
+                    if (!empty($row['date_of_birth'])) {
+                        $age = (int)date_diff(date_create($row['date_of_birth']), date_create('today'))->y . ' yrs';
+                    }
+                    $slotFormatted = format_time_slot($row['slot_time']);
+                    $dateFormatted = date('M j', strtotime($row['appointment_date']));
                 ?>
                 <tr id="row-<?= $row['id'] ?>" class="<?= $isCurrent ? 'row-current' : '' ?>">
-                    <td><strong style="color:var(--primary-dark)">#TK-<?= $row['id'] ?></strong></td>
+                    <td><strong style="color:var(--primary-dark)"><?= clean($row['appointment_token']) ?></strong></td>
                     <td>
-                        <strong><?= clean($row['patient']) ?></strong>
-                        <br><small style="color:var(--text-muted)"><?= $row['gender'] === 'M' ? 'Male' : 'Female' ?>, <?= $row['age'] ?> yrs</small>
+                        <strong><?= clean($row['patient_name']) ?></strong>
+                        <br><small style="color:var(--text-muted)"><?= ucfirst(clean($row['gender'] ?? 'Patient')) ?>, <?= $age ?></small>
                     </td>
-                    <td><?= clean($row['slot']) ?><?= $isCurrent ? ' <strong style="color:var(--primary)">(Now)</strong>' : '' ?></td>
+                    <td><?= clean($dateFormatted) ?> &bull; <?= clean($slotFormatted) ?><?= $isCurrent ? ' <strong style="color:var(--primary)">(Now)</strong>' : '' ?></td>
                     <td><a href="tel:<?= clean(str_replace(' ','',$row['phone'])) ?>" style="color:var(--primary)"><?= clean($row['phone']) ?></a></td>
                     <td>
                         <span class="status-badge <?= $badgeClass ?>" id="badge-<?= $row['id'] ?>">
@@ -193,16 +213,13 @@ $total   = count($queue);
                     </td>
                     <td style="text-align:right">
                         <?php if ($isDone): ?>
-                            <button class="btn btn-outline btn-sm" onclick="alert('Consultation summary for <?= clean(addslashes($row['patient'])) ?> saved.')">Summary</button>
+                            <button class="btn btn-outline btn-sm" onclick="alert('Consultation record for <?= clean(addslashes($row['patient_name'])) ?> is archived.')">Summary</button>
                         <?php elseif ($isCurrent): ?>
                             <button class="btn btn-primary btn-sm" id="btn-<?= $row['id'] ?>"
-                                onclick="markDone('<?= $row['id'] ?>','<?= clean(addslashes($row['patient'])) ?>')">Mark Done</button>
-                        <?php elseif ($isWaiting): ?>
-                            <button class="btn btn-secondary btn-sm" id="btn-<?= $row['id'] ?>"
-                                onclick="callIn('<?= $row['id'] ?>','<?= clean(addslashes($row['patient'])) ?>')">Call In</button>
+                                onclick="markDone('<?= $row['id'] ?>','<?= clean(addslashes($row['patient_name'])) ?>')">Mark Done</button>
                         <?php else: ?>
-                            <button class="btn btn-ghost btn-sm"
-                                onclick="alert('Notified <?= clean(addslashes($row['patient'])) ?> to arrive 10 min before their slot.')">Notify</button>
+                            <button class="btn btn-secondary btn-sm" id="btn-<?= $row['id'] ?>"
+                                onclick="callIn('<?= $row['id'] ?>','<?= clean(addslashes($row['patient_name'])) ?>')">Call In</button>
                         <?php endif; ?>
                     </td>
                 </tr>
@@ -210,6 +227,7 @@ $total   = count($queue);
                 </tbody>
             </table>
         </div>
+        <?php endif; ?>
     </section>
 
 </div>
@@ -263,10 +281,10 @@ $total   = count($queue);
         var badge = document.getElementById('badge-' + id);
         var btn   = document.getElementById('btn-'   + id);
         var row   = document.getElementById('row-'   + id);
-        if (badge) { badge.className = 'status-badge consulting'; badge.textContent = 'In Room 304'; }
+        if (badge) { badge.className = 'status-badge consulting'; badge.textContent = 'In Consultation'; }
         if (row)   { row.classList.add('row-current'); }
         if (btn)   { btn.className = 'btn btn-primary btn-sm'; btn.textContent = 'Mark Done'; btn.onclick = function(){ markDone(id, name); }; }
-        alert('Patient ' + name + ' (Token #' + id + ') called into Consultation Room 304.');
+        alert('Patient ' + name + ' called into consultation room.');
     }
 </script>
 </body>

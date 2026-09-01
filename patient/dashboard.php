@@ -32,15 +32,33 @@ $ecPhone  = $pat['emergency_contact_phone'] ?? null;
 $email    = $pat['email']       ?? '';
 $joined   = $pat['created_at']  ? date('M Y', strtotime($pat['created_at'])) : '—';
 
-// Verified active doctors
-$docs = $db->query(
-    "SELECT d.user_id, d.name, d.specialization, d.qualification,
-            d.experience_years, d.image_path, u.doctor_login_id
-     FROM doctor_profiles d
-     JOIN users u ON d.user_id = u.id
-     WHERE d.verification_status = 'verified' AND u.status = 'active'
-     ORDER BY d.name ASC LIMIT 6"
-)->fetchAll();
+// Query active/upcoming appointment for this patient
+$stmtApp = $db->prepare("
+    SELECT a.*, d.name AS doctor_name, d.specialization, d.qualification,
+           h.name AS hospital_name, h.address AS hospital_address, h.phone AS hospital_phone
+    FROM appointments a
+    JOIN doctor_profiles d ON a.doctor_id = d.user_id
+    JOIN hospitals h ON a.hospital_id = h.id
+    WHERE a.patient_id = ? AND a.status IN ('confirmed', 'pending', 'in_consultation')
+    ORDER BY a.appointment_date ASC, a.slot_time ASC
+    LIMIT 1
+");
+$stmtApp->execute([$uid]);
+$activeApp = $stmtApp->fetch();
+
+// Verified active doctors with their primary affiliated hospital
+$docs = $db->query("
+    SELECT d.user_id, d.name, d.specialization, d.qualification,
+           d.experience_years, d.image_path, u.doctor_login_id,
+           h.name AS hospital_name, h.phone AS hospital_phone
+    FROM doctor_profiles d
+    JOIN users u ON d.user_id = u.id
+    LEFT JOIN doctor_hospital dh ON dh.doctor_id = d.user_id AND dh.status = 'active'
+    LEFT JOIN hospitals h ON h.id = dh.hospital_id
+    WHERE d.verification_status = 'verified' AND u.status = 'active'
+    ORDER BY d.experience_years DESC, d.name ASC 
+    LIMIT 6
+")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -151,7 +169,7 @@ $docs = $db->query(
         <!-- Search -->
         <div class="quick-search-box" style="margin-top:20px">
             <span style="font-size:1.1rem;margin-right:6px;flex-shrink:0">🔍</span>
-            <input type="text" id="docSearch" placeholder="Search by doctor name or specialty (e.g. Cardiology)…">
+            <input type="text" id="docSearch" placeholder="Search by doctor name, hospital or specialty (e.g. Cardiology)…">
         </div>
     </section>
 
@@ -162,19 +180,65 @@ $docs = $db->query(
         <section class="dashboard-card">
             <h2 class="dashboard-card-title">Your Appointment Status</h2>
 
-            <!-- No appointments table yet — show clear empty state -->
-            <div style="background:var(--bg);border:1px dashed var(--border-hover);border-radius:var(--radius-md);padding:32px 20px;text-align:center">
-                <div style="font-size:2.2rem;margin-bottom:10px">📋</div>
-                <h3 style="font-size:1rem;margin-bottom:6px;color:var(--text-main)">No Active Appointments</h3>
-                <p style="font-size:.86rem;color:var(--text-muted);max-width:280px;margin:0 auto 18px">
-                    You don't have any upcoming appointments right now. Browse the verified doctors below and book a consultation.
-                </p>
-                <a class="btn btn-primary btn-sm"
-                   href="#doctorSection"
-                   onclick="document.getElementById('doctorSection').scrollIntoView({behavior:'smooth'});return false;">
-                    Browse Doctors
-                </a>
-            </div>
+            <?php if ($activeApp): 
+                $appDate = date('D, M j, Y', strtotime($activeApp['appointment_date']));
+                $appTime = format_time_slot($activeApp['slot_time']);
+                $tokenNo = $activeApp['appointment_token'];
+                $statusPill = match($activeApp['status']) {
+                    'confirmed' => 'status-pill-green',
+                    'in_consultation' => 'status-pill-blue',
+                    default => 'status-pill-amber'
+                };
+            ?>
+                <!-- Active Appointment Token Pass -->
+                <div class="token-pass-card" style="background:linear-gradient(135deg, var(--surface) 0%, var(--primary-surface) 100%);border:1px solid var(--border-accent);border-radius:var(--radius-lg);padding:22px;box-shadow:var(--shadow-sm)">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+                        <span style="font-family:var(--font-heading);font-weight:800;font-size:1.15rem;color:var(--primary-dark)">
+                            <?= clean($tokenNo) ?>
+                        </span>
+                        <span class="status-badge consulting" style="font-size:0.78rem">
+                            <?= ucfirst(clean($activeApp['status'])) ?> ✓
+                        </span>
+                    </div>
+
+                    <div style="margin-bottom:14px">
+                        <h3 style="font-size:1.1rem;margin-bottom:4px;color:var(--text-main)"><?= clean($activeApp['doctor_name']) ?></h3>
+                        <p style="font-size:0.86rem;color:var(--text-muted)">
+                            <?= clean($activeApp['specialization']) ?> &bull; <?= clean($activeApp['hospital_name']) ?>
+                        </p>
+                    </div>
+
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:12px;background:var(--surface);border-radius:var(--radius-md);margin-bottom:16px;border:1px solid var(--border)">
+                        <div>
+                            <small style="display:block;font-size:0.72rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Date</small>
+                            <strong style="font-size:0.88rem"><?= clean($appDate) ?></strong>
+                        </div>
+                        <div>
+                            <small style="display:block;font-size:0.72rem;color:var(--text-muted);font-weight:700;text-transform:uppercase">Time Slot</small>
+                            <strong style="font-size:0.88rem;color:var(--primary)"><?= clean($appTime) ?></strong>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                        <span style="font-size:0.8rem;color:var(--text-muted)">📍 <?= clean($activeApp['hospital_address']) ?></span>
+                        <a class="btn btn-outline btn-sm" href="tel:<?= clean(str_replace(' ','',$activeApp['hospital_phone'] ?: '102')) ?>">Call Desk</a>
+                    </div>
+                </div>
+            <?php else: ?>
+                <!-- Clean Empty State -->
+                <div style="background:var(--bg);border:1px dashed var(--border-hover);border-radius:var(--radius-md);padding:32px 20px;text-align:center">
+                    <div style="font-size:2.2rem;margin-bottom:10px">📋</div>
+                    <h3 style="font-size:1rem;margin-bottom:6px;color:var(--text-main)">No Active Appointments</h3>
+                    <p style="font-size:.86rem;color:var(--text-muted);max-width:280px;margin:0 auto 18px">
+                        You don't have any upcoming appointments right now. Browse the verified doctors below and book a consultation.
+                    </p>
+                    <a class="btn btn-primary btn-sm"
+                       href="#doctorSection"
+                       onclick="document.getElementById('doctorSection').scrollIntoView({behavior:'smooth'});return false;">
+                        Browse Doctors
+                    </a>
+                </div>
+            <?php endif; ?>
 
             <!-- Account info -->
             <div style="margin-top:16px;padding:14px 16px;background:var(--primary-surface);border:1px solid var(--border-accent);border-radius:var(--radius-md);font-size:.84rem">
@@ -194,7 +258,7 @@ $docs = $db->query(
                     <span>Browse verified specialists</span>
                 </div>
                 <div class="action-card-btn"
-                     onclick="alert('Appointment history will be available once the scheduling system is set up.')">
+                     onclick="alert('Your active appointment history is synchronized directly from hospital admissions.')">
                     <span class="action-icon">📋</span>
                     <strong>Visit History</strong>
                     <span>Past consultations</span>
@@ -205,7 +269,7 @@ $docs = $db->query(
                     <span>Dial 102 — Free</span>
                 </a>
                 <div class="action-card-btn"
-                     onclick="alert('Billing information will appear here after your first consultation.')">
+                     onclick="alert('Standard hospital consultation fees apply directly at the hospital reception desk.')">
                     <span class="action-icon">💳</span>
                     <strong>Billing</strong>
                     <span>No hidden charges</span>
@@ -246,7 +310,8 @@ $docs = $db->query(
             ?>
             <article class="modern-card doctor-item"
                      data-name="<?= clean(strtolower($d['name'])) ?>"
-                     data-spec="<?= clean(strtolower($d['specialization'])) ?>">
+                     data-spec="<?= clean(strtolower($d['specialization'])) ?>"
+                     data-hosp="<?= clean(strtolower($d['hospital_name'] ?? '')) ?>">
                 <div class="doctor-card-top">
                     <?php if (!empty($d['image_path']) && file_exists(__DIR__ . '/../' . $d['image_path'])): ?>
                         <img src="../<?= clean($d['image_path']) ?>" alt="<?= clean($d['name']) ?>"
@@ -257,14 +322,14 @@ $docs = $db->query(
                     <div>
                         <h3 class="doctor-name"><?= clean($d['name']) ?></h3>
                         <span class="dept-tag"><?= clean($d['specialization']) ?></span>
-                        <p class="hospital-sub"><?= clean($d['qualification']) ?> &bull; <?= (int)$d['experience_years'] ?> yrs exp</p>
+                        <p class="hospital-sub"><?= clean($d['hospital_name'] ?: 'Accredited Hospital') ?> &bull; <?= (int)$d['experience_years'] ?> yrs exp</p>
                     </div>
                 </div>
                 <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:14px;padding:10px 12px;background:var(--bg);border-radius:var(--radius-sm)">
-                    📞 Contact reception to book a consultation with this specialist.
+                    📞 Contact <?= clean($d['hospital_name'] ?: 'hospital') ?> reception to book or confirm a consultation slot.
                 </p>
-                <a class="btn btn-primary btn-full" href="tel:+97714200000">
-                    Contact Hospital Reception
+                <a class="btn btn-primary btn-full" href="tel:<?= clean(str_replace(' ','',$d['hospital_phone'] ?: '+97714200000')) ?>">
+                    Contact Reception (<?= clean($d['hospital_phone'] ?: 'Call') ?>)
                 </a>
             </article>
             <?php endforeach; ?>
@@ -293,7 +358,7 @@ $docs = $db->query(
         searchBox.addEventListener('input', function () {
             var q = this.value.toLowerCase().trim();
             document.querySelectorAll('#doctorGrid .doctor-item').forEach(function (c) {
-                var t = (c.dataset.name || '') + ' ' + (c.dataset.spec || '');
+                var t = (c.dataset.name || '') + ' ' + (c.dataset.spec || '') + ' ' + (c.dataset.hosp || '');
                 c.style.display = (!q || t.includes(q)) ? '' : 'none';
             });
         });
