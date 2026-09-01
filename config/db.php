@@ -21,8 +21,8 @@ function getDB(): PDO
             $parsed = parse_url($dbUrl);
             $host = $parsed['host'] ?? '127.0.0.1';
             $port = $parsed['port'] ?? '5432';
-            $user = $parsed['user'] ?? 'postgres';
-            $pass = $parsed['pass'] ?? '';
+            $user = urldecode($parsed['user'] ?? 'postgres');
+            $pass = urldecode($parsed['pass'] ?? '');
             $name = ltrim($parsed['path'] ?? 'hms', '/');
 
             // Default to require for cloud databases
