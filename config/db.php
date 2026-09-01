@@ -15,11 +15,42 @@ function getDB(): PDO
     }
 
     try {
-        $dsn = "pgsql:host=" . DB_HOST
-             . ";port=" . DB_PORT
-             . ";dbname=" . DB_NAME;
+        $dbUrl = getenv('DATABASE_URL') ?: getenv('POSTGRES_URL');
 
-        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+        if ($dbUrl) {
+            $parsed = parse_url($dbUrl);
+            $host = $parsed['host'] ?? '127.0.0.1';
+            $port = $parsed['port'] ?? '5432';
+            $user = $parsed['user'] ?? 'postgres';
+            $pass = $parsed['pass'] ?? '';
+            $name = ltrim($parsed['path'] ?? 'hms', '/');
+
+            // Default to require for cloud databases
+            $sslmode = 'require';
+            if (!empty($parsed['query'])) {
+                parse_str($parsed['query'], $queryParams);
+                if (isset($queryParams['sslmode'])) {
+                    $sslmode = $queryParams['sslmode'];
+                }
+            }
+
+            $dsn = "pgsql:host={$host};port={$port};dbname={$name};sslmode={$sslmode}";
+            $dbUser = $user;
+            $dbPass = $pass;
+        } else {
+            $dsn = "pgsql:host=" . DB_HOST
+                 . ";port=" . DB_PORT
+                 . ";dbname=" . DB_NAME;
+
+            if (getenv('DB_SSL') === 'true' || getenv('DB_SSL') === '1' || (DB_HOST !== '127.0.0.1' && DB_HOST !== 'localhost')) {
+                $dsn .= ";sslmode=require";
+            }
+
+            $dbUser = DB_USER;
+            $dbPass = DB_PASS;
+        }
+
+        $pdo = new PDO($dsn, $dbUser, $dbPass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
