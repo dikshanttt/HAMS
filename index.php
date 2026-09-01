@@ -10,18 +10,20 @@ if (current_user_id()) {
 $db = getDB();
 
 // 1. Live Stats
-$totalHospitals = (int)$db->query("SELECT COUNT(*) FROM hospitals WHERE is_active = TRUE")->fetchColumn();
-$totalDoctors   = (int)$db->query("
+$totalHospitals    = (int)$db->query("SELECT COUNT(*) FROM hospitals WHERE is_active = TRUE")->fetchColumn();
+$totalDoctors      = (int)$db->query("
     SELECT COUNT(DISTINCT d.user_id) 
     FROM doctor_profiles d 
     JOIN users u ON d.user_id = u.id 
     WHERE d.verification_status = 'verified' AND u.status = 'active'
 ")->fetchColumn();
+
+// Total appointments (all statuses — every booking ever made counts)
 $totalAppointments = (int)$db->query("SELECT COUNT(*) FROM appointments")->fetchColumn();
+
+// Patient satisfaction = average hospital rating (real data), no hardcoded fallback
 $avgRating = (float)$db->query("SELECT ROUND(AVG(rating), 1) FROM hospitals WHERE is_active = TRUE")->fetchColumn();
-if ($avgRating <= 0) {
-    $avgRating = 4.9;
-}
+
 
 // 2. Hero Featured Doctor
 $heroDoctor = $db->query("
@@ -41,7 +43,7 @@ if ($heroDoctor) {
     $heroSlots = $db->query("
         SELECT start_time, end_time, day_of_week
         FROM schedules
-        WHERE doctor_id = " . (int)$heroDoctor['user_id'] . " AND is_active = TRUE
+        WHERE doctor_id = " . (int)$heroDoctor['user_id'] . " AND status = 'active'
         ORDER BY start_time ASC
         LIMIT 3
     ")->fetchAll();
@@ -100,7 +102,7 @@ $doctorSchedules = [];
 $schedRows = $db->query("
     SELECT doctor_id, day_of_week, start_time, end_time
     FROM schedules
-    WHERE is_active = TRUE
+    WHERE status = 'active'
     ORDER BY start_time ASC
 ")->fetchAll();
 foreach ($schedRows as $s) {
@@ -338,16 +340,21 @@ $bannerColors = ['banner-emerald', 'banner-teal', 'banner-forest'];
                         <div class="stat-text">Verified Specialists</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-num"><?= max($totalAppointments, 50) ?><span>+</span></div>
+                        <div class="stat-num"><?= $totalAppointments ?><span>+</span></div>
                         <div class="stat-text">Appointments Booked</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-num"><?= number_format($avgRating, 1) ?><span>★</span></div>
+                        <?php if ($avgRating > 0): ?>
+                            <div class="stat-num"><?= number_format($avgRating, 1) ?><span>★</span></div>
+                        <?php else: ?>
+                            <div class="stat-num" style="font-size:1.8rem">—</div>
+                        <?php endif; ?>
                         <div class="stat-text">Patient Satisfaction</div>
                     </div>
                 </div>
             </div>
         </section>
+
 
         <!-- Hospitals Section -->
         <section class="section hospitals-section" id="hospitals">

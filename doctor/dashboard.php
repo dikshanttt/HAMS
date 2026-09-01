@@ -2,24 +2,21 @@
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../config/db.php';
-
 require_login(['doctor']);
 
 $db  = getDB();
 $uid = current_user_id();
 
-$stmt = $db->prepare(
-    "SELECT u.doctor_login_id, u.email,
-            d.name, d.specialization, d.license_no,
-            d.qualification, d.experience_years, d.image_path,
-            d.verification_status,
-            h.name AS hospital_name
-     FROM users u
-     LEFT JOIN doctor_profiles d ON u.id = d.user_id
-     LEFT JOIN doctor_hospital dh ON dh.doctor_id = d.user_id AND dh.status = 'active'
-     LEFT JOIN hospitals h ON h.id = dh.hospital_id
-     WHERE u.id = ?"
-);
+// Fetch doctor details
+$stmt = $db->prepare("
+    SELECT u.doctor_login_id, u.email,
+           d.name, d.specialization, d.license_no,
+           d.qualification, d.experience_years, d.image_path,
+           d.verification_status
+    FROM users u
+    LEFT JOIN doctor_profiles d ON u.id = d.user_id
+    WHERE u.id = ?
+");
 $stmt->execute([$uid]);
 $doc = $stmt->fetch();
 
@@ -29,43 +26,103 @@ $spec     = $doc['specialization']  ?? 'Specialist';
 $qual     = $doc['qualification']   ?? 'MBBS, MD';
 $exp      = (int)($doc['experience_years'] ?? 0);
 $license  = $doc['license_no']      ?? 'N/A';
-$hospName = $doc['hospital_name']   ?? 'Accredited Hospital';
 $rawInit  = preg_replace('/^Dr\.?\s*/i', '', $docName);
 $initials = strtoupper(mb_substr(trim($rawInit), 0, 2)) ?: 'DR';
 
 $flash = get_flash();
 
-// Query real appointments for this doctor from database
+// Handle Schedule Request Submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_verify();
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'submit_schedule_request') {
+        $hospId    = (int)($_POST['hospital_id'] ?? 0);
+        $dayOfWeek = clean($_POST['day_of_week'] ?? '');
+        $startTime = clean($_POST['start_time'] ?? '');
+        $endTime   = clean($_POST['end_time'] ?? '');
+        $reason    = clean($_POST['reason'] ?? '');
+        $slotMins  = (int)($_POST['slot_duration'] ?? 15);
+
+        if (!$hospId || !$dayOfWeek || !$startTime || !$endTime || !$reason) {
+            set_flash('error', 'Hospital, day of week, start time, end time, and reason for change are required.');
+        } else {
+            // Check if there is already a pending request for this day
+            $checkPending = $db->prepare("SELECT 1 FROM schedules WHERE doctor_id = ? AND day_of_week = ? AND status = 'pending_approval'");
+            $checkPending->execute([$uid, $dayOfWeek]);
+            if ($checkPending->fetch()) {
+                set_flash('error', "You already have a pending schedule request for $dayOfWeek awaiting admin approval.");
+            } else {
+                $stmtIns = $db->prepare("
+                    INSERT INTO schedules (doctor_id, hospital_id, day_of_week, start_time, end_time, slot_duration_minutes, status, change_reason, requested_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'pending_approval', ?, CURRENT_TIMESTAMP)
+                ");
+                $stmtIns->execute([$uid, $hospId, $dayOfWeek, $startTime, $endTime, $slotMins, $reason]);
+                set_flash('success', "Schedule request for $dayOfWeek submitted successfully. It will become active once reviewed by the administrator.");
+            }
+        }
+        redirect('/doctor/dashboard.php');
+    }
+}
+
+// Fetch Affiliated Hospitals
+$affiliatedHospitals = $db->prepare("
+    SELECT h.id, h.name, h.address, h.phone, dh.status, dh.join_date
+    FROM doctor_hospital dh
+    JOIN hospitals h ON h.id = dh.hospital_id
+    WHERE dh.doctor_id = ? AND dh.status = 'active'
+    ORDER BY h.name ASC
+");
+$affiliatedHospitals->execute([$uid]);
+$myHospitals = $affiliatedHospitals->fetchAll();
+
+// Fetch Doctor Schedules (Active & Pending)
+$stmtSchedules = $db->prepare("
+    SELECT s.*, h.name AS hospital_name
+    FROM schedules s
+    JOIN hospitals h ON h.id = s.hospital_id
+    WHERE s.doctor_id = ? AND s.status IN ('active', 'pending_approval', 'rejected')
+    ORDER BY CASE s.day_of_week
+        WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+        WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7
+    END ASC
+");
+$stmtSchedules->execute([$uid]);
+$mySchedules = $stmtSchedules->fetchAll();
+
+// Fetch Appointments Queue
 $stmtQueue = $db->prepare("
-    SELECT a.id, a.appointment_token, a.slot_time, a.appointment_date, a.status, a.reason,
-           p.name AS patient_name, p.gender, p.phone, p.date_of_birth
+    SELECT a.*,
+           p.name AS patient_name, p.gender, p.phone, p.date_of_birth, p.blood_group,
+           h.name AS hospital_name
     FROM appointments a
     JOIN patient_profiles p ON a.patient_id = p.user_id
+    JOIN hospitals h ON a.hospital_id = h.id
     WHERE a.doctor_id = ?
     ORDER BY a.appointment_date ASC, a.slot_time ASC
 ");
 $stmtQueue->execute([$uid]);
 $queue = $stmtQueue->fetchAll();
 
-$done    = count(array_filter($queue, fn($r) => $r['status'] === 'completed'));
-$waiting = count(array_filter($queue, fn($r) => in_array($r['status'], ['pending', 'confirmed', 'in_consultation'])));
-$total   = count($queue);
+$confirmedCount = count(array_filter($queue, fn($r) => in_array($r['status'], ['confirmed', 'in_consultation'])));
+$completedCount = count(array_filter($queue, fn($r) => $r['status'] === 'completed'));
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Doctor Desk | HAMS</title>
+    <title>Doctor Desk | HAMS Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../assets/css/style.css?v=<?= filemtime('../assets/css/style.css') ?>">
     <style>
-        .stat-color-warn { color: var(--warning) !important; }
-        .stat-color-ok   { color: var(--success) !important; }
-        .stat-color-pri  { color: var(--primary) !important; }
-        .row-current td  { background: var(--primary-surface) !important; }
+        .modal-overlay{display:none;position:fixed;inset:0;background:rgba(15,43,34,0.6);backdrop-filter:blur(4px);z-index:100;place-items:center;padding:20px}
+        .modal-overlay.open{display:grid}
+        .modal-box{background:#fff;border-radius:16px;width:min(100%,540px);box-shadow:0 20px 40px rgba(0,0,0,0.2);overflow:hidden}
+        .modal-head{padding:18px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--primary-surface)}
+        .modal-body{padding:24px;display:grid;gap:14px}
     </style>
 </head>
 <body class="portal-page">
@@ -99,193 +156,248 @@ $total   = count($queue);
     </div>
     <?php endif; ?>
 
-    <!-- ===== DOCTOR PROFILE CARD ===== -->
+    <!-- Doctor Hero Card -->
     <section class="doctor-hero-profile" style="margin-bottom:28px">
         <div class="doctor-profile-block">
             <?php if (!empty($doc['image_path']) && file_exists(__DIR__.'/../'.$doc['image_path'])): ?>
-                <img src="../<?= clean($doc['image_path']) ?>" alt="<?= clean($docName) ?>"
-                     class="doctor-avatar-lg" style="object-fit:cover">
+                <img src="../<?= clean($doc['image_path']) ?>" alt="<?= clean($docName) ?>" class="doctor-avatar-lg" style="object-fit:cover">
             <?php else: ?>
                 <div class="doctor-avatar-lg"><?= clean($initials) ?></div>
             <?php endif; ?>
             <div>
                 <h1 style="font-size:1.5rem;margin-bottom:4px"><?= clean($docName) ?></h1>
                 <p style="color:var(--text-muted);font-size:.9rem;margin-bottom:6px">
-                    <?= clean($qual) ?> &bull; <?= $exp ?> years clinical experience &bull; <?= clean($hospName) ?>
+                    <?= clean($qual) ?> &bull; <?= $exp ?> years experience &bull; <?= clean($spec) ?>
                 </p>
                 <div class="doctor-meta-tags">
-                    <span class="badge-tag verified">Verified ✓</span>
-                    <span class="badge-tag license">License: <?= clean($license) ?></span>
+                    <span class="badge-tag verified">Verified Specialist ✓</span>
+                    <span class="badge-tag license">Lic: <?= clean($license) ?></span>
                     <span class="badge-tag" style="background:var(--bg);color:var(--text-body)"><?= clean($loginId) ?></span>
-                    <span class="badge-tag" style="background:#e0f2fe;color:#0369a1"><?= clean($spec) ?></span>
                 </div>
             </div>
         </div>
 
-        <!-- Practice status toggle -->
-        <div class="status-toggle-box" id="statusBox" onclick="toggleStatus()" style="cursor:pointer;user-select:none"
-             title="Click to toggle practice status">
-            <span class="pulse-dot" id="statusDot"></span>
-            <span id="statusText">Accepting Patients (Available)</span>
+        <div style="text-align:right">
+            <button class="btn btn-primary btn-sm" onclick="openScheduleModal()" <?= empty($myHospitals) ? 'disabled' : '' ?>>
+                📅&nbsp;Request / Modify Schedule
+            </button>
+            <?php if (empty($myHospitals)): ?>
+                <small style="display:block;color:#b91c1c;margin-top:4px">Awaiting hospital assignment by Admin</small>
+            <?php endif; ?>
         </div>
     </section>
 
-    <!-- ===== METRICS ===== -->
-    <section class="doctor-metrics-row" style="margin-bottom:30px">
-        <article class="metric-card">
-            <div class="metric-card-label">Upcoming Visits</div>
-            <div class="metric-card-num"><?= $total ?></div>
-            <div class="metric-card-sub">appointments scheduled</div>
-        </article>
-        <article class="metric-card">
-            <div class="metric-card-label">Waiting / In Consult</div>
-            <div class="metric-card-num stat-color-warn" id="waitCount"><?= $waiting ?></div>
-            <div class="metric-card-sub">patients in queue</div>
-        </article>
-        <article class="metric-card">
-            <div class="metric-card-label">Completed</div>
-            <div class="metric-card-num stat-color-ok" id="doneCount"><?= $done ?></div>
-            <div class="metric-card-sub">consultations finished</div>
-        </article>
-        <article class="metric-card">
-            <div class="metric-card-label">Avg Duration</div>
-            <div class="metric-card-num stat-color-pri">15<span style="font-size:1rem">min</span></div>
-            <div class="metric-card-sub">per scheduled consultation</div>
-        </article>
+    <!-- Affiliated Hospitals Strip -->
+    <section class="dashboard-card" style="margin-bottom:28px">
+        <h2 class="dashboard-card-title">My Affiliated Medical Facilities</h2>
+        <?php if (empty($myHospitals)): ?>
+            <p style="color:var(--text-muted);font-size:.88rem">You are not currently affiliated with any partner hospital. The administrator will assign your facility soon.</p>
+        <?php else: ?>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">
+                <?php foreach ($myHospitals as $h): ?>
+                <div style="padding:14px 18px;background:var(--primary-surface);border:1px solid var(--border-accent);border-radius:10px">
+                    <strong style="display:block;color:var(--primary-dark);font-size:.95rem">🏥 <?= clean($h['name']) ?></strong>
+                    <small style="display:block;color:var(--text-muted);margin:4px 0">📍 <?= clean($h['address']) ?></small>
+                    <span class="status-badge done" style="font-size:.72rem">Active Practitioner ✓</span>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </section>
 
-    <!-- ===== PATIENT QUEUE ===== -->
-    <section class="dashboard-card" style="margin-bottom:48px">
-        <div class="section-head flex-between" style="margin-bottom:20px">
+    <!-- My Weekly Consultation Schedules -->
+    <section class="dashboard-card" style="margin-bottom:28px">
+        <div class="section-head flex-between" style="margin-bottom:16px">
             <div>
-                <span class="section-tag">Live Queue</span>
-                <h2 class="section-title" style="font-size:1.45rem">Patient Consultation Queue</h2>
+                <span class="section-tag">Consultation Hours</span>
+                <h2 class="section-title" style="font-size:1.3rem">My Weekly Schedule Slots</h2>
             </div>
-            <button class="btn btn-outline btn-sm" onclick="location.reload()">↻&nbsp;Refresh</button>
+            <button class="btn btn-outline btn-sm" onclick="openScheduleModal()">+ Change Schedule</button>
+        </div>
+
+        <?php if (empty($mySchedules)): ?>
+            <div style="text-align:center;padding:32px;background:var(--bg);border:1px dashed var(--border-hover);border-radius:12px">
+                <div style="font-size:2rem;margin-bottom:8px">📅</div>
+                <h3 style="font-size:1rem;margin-bottom:4px">No Schedule Configured</h3>
+                <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:14px">Submit your consultation hours so patients can book appointments with you.</p>
+                <button class="btn btn-primary btn-sm" onclick="openScheduleModal()">Set Schedule Now</button>
+            </div>
+        <?php else: ?>
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Day of Week</th>
+                            <th>Hospital</th>
+                            <th>Consultation Hours</th>
+                            <th>Slot Duration</th>
+                            <th>Status / Admin Review</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($mySchedules as $s): 
+                            $badgeClass = match($s['status']) {
+                                'active' => 'done',
+                                'pending_approval' => 'waiting',
+                                'rejected' => 'rejected',
+                                default => 'waiting'
+                            };
+                            $badgeLabel = match($s['status']) {
+                                'active' => 'Active ✓',
+                                'pending_approval' => 'Pending Admin Approval ⏳',
+                                'rejected' => 'Rejected ✕',
+                                default => ucfirst(clean($s['status']))
+                            };
+                        ?>
+                        <tr>
+                            <td><strong style="color:var(--text-main)"><?= clean($s['day_of_week']) ?></strong></td>
+                            <td><?= clean($s['hospital_name']) ?></td>
+                            <td>
+                                <strong style="color:var(--primary)">
+                                    <?= clean(format_time_slot($s['start_time'])) ?> – <?= clean(format_time_slot($s['end_time'])) ?>
+                                </strong>
+                            </td>
+                            <td><?= (int)$s['slot_duration_minutes'] ?> mins</td>
+                            <td>
+                                <span class="status-badge <?= $badgeClass ?>"><?= $badgeLabel ?></span>
+                                <?php if ($s['status'] === 'pending_approval'): ?>
+                                    <small style="display:block;color:var(--text-muted);margin-top:2px">Reason: <?= clean($s['change_reason'] ?: '') ?></small>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </section>
+
+    <!-- Patient Consultation Queue -->
+    <section class="dashboard-card" style="margin-bottom:48px">
+        <div class="section-head flex-between" style="margin-bottom:18px">
+            <div>
+                <span class="section-tag">Patient Queue</span>
+                <h2 class="section-title" style="font-size:1.3rem">Upcoming Appointments &amp; Patients</h2>
+            </div>
+            <span style="font-size:.84rem;color:var(--text-muted)"><?= $confirmedCount ?> confirmed consultation<?= $confirmedCount !== 1 ? 's' : '' ?></span>
         </div>
 
         <?php if (empty($queue)): ?>
-            <div style="background:var(--bg);border:1px dashed var(--border-hover);border-radius:var(--radius-md);padding:40px 20px;text-align:center">
-                <div style="font-size:2.2rem;margin-bottom:10px">📅</div>
-                <h3 style="font-size:1.05rem;margin-bottom:6px">No Appointments Booked Yet</h3>
-                <p style="font-size:0.86rem;color:var(--text-muted)">Patient consultations booked for your department will appear here automatically.</p>
+            <div style="text-align:center;padding:32px;background:var(--bg);border:1px dashed var(--border-hover);border-radius:12px">
+                <p style="color:var(--text-muted);font-size:.88rem">No patient appointments booked yet.</p>
             </div>
         <?php else: ?>
-        <div class="data-table-wrap">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Token</th>
-                        <th>Patient</th>
-                        <th>Date & Time</th>
-                        <th>Contact</th>
-                        <th>Status</th>
-                        <th style="text-align:right">Action</th>
-                    </tr>
-                </thead>
-                <tbody id="queueTbody">
-                <?php foreach ($queue as $row):
-                    $isCurrent  = $row['status'] === 'in_consultation';
-                    $isDone     = $row['status'] === 'completed';
-                    $isWaiting  = in_array($row['status'], ['pending', 'confirmed']);
-                    $badgeClass = $isDone ? 'done' : ($isCurrent ? 'consulting' : 'waiting');
-                    $badgeLabel = $isDone ? 'Completed ✓' : ($isCurrent ? 'In Consultation' : ucfirst(clean($row['status'])));
-                    
-                    $age = '—';
-                    if (!empty($row['date_of_birth'])) {
-                        $age = (int)date_diff(date_create($row['date_of_birth']), date_create('today'))->y . ' yrs';
-                    }
-                    $slotFormatted = format_time_slot($row['slot_time']);
-                    $dateFormatted = date('M j', strtotime($row['appointment_date']));
-                ?>
-                <tr id="row-<?= $row['id'] ?>" class="<?= $isCurrent ? 'row-current' : '' ?>">
-                    <td><strong style="color:var(--primary-dark)"><?= clean($row['appointment_token']) ?></strong></td>
-                    <td>
-                        <strong><?= clean($row['patient_name']) ?></strong>
-                        <br><small style="color:var(--text-muted)"><?= ucfirst(clean($row['gender'] ?? 'Patient')) ?>, <?= $age ?></small>
-                    </td>
-                    <td><?= clean($dateFormatted) ?> &bull; <?= clean($slotFormatted) ?><?= $isCurrent ? ' <strong style="color:var(--primary)">(Now)</strong>' : '' ?></td>
-                    <td><a href="tel:<?= clean(str_replace(' ','',$row['phone'])) ?>" style="color:var(--primary)"><?= clean($row['phone']) ?></a></td>
-                    <td>
-                        <span class="status-badge <?= $badgeClass ?>" id="badge-<?= $row['id'] ?>">
-                            <?= $badgeLabel ?>
-                        </span>
-                    </td>
-                    <td style="text-align:right">
-                        <?php if ($isDone): ?>
-                            <button class="btn btn-outline btn-sm" onclick="alert('Consultation record for <?= clean(addslashes($row['patient_name'])) ?> is archived.')">Summary</button>
-                        <?php elseif ($isCurrent): ?>
-                            <button class="btn btn-primary btn-sm" id="btn-<?= $row['id'] ?>"
-                                onclick="markDone('<?= $row['id'] ?>','<?= clean(addslashes($row['patient_name'])) ?>')">Mark Done</button>
-                        <?php else: ?>
-                            <button class="btn btn-secondary btn-sm" id="btn-<?= $row['id'] ?>"
-                                onclick="callIn('<?= $row['id'] ?>','<?= clean(addslashes($row['patient_name'])) ?>')">Call In</button>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
+            <div class="data-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Token</th>
+                            <th>Patient Name</th>
+                            <th>Hospital</th>
+                            <th>Date &amp; Time</th>
+                            <th>Contact</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($queue as $q): 
+                            $qBadge = match($q['status']) {
+                                'confirmed' => 'done',
+                                'in_consultation' => 'consulting',
+                                'completed' => 'done',
+                                default => 'waiting'
+                            };
+                        ?>
+                        <tr>
+                            <td><strong style="color:var(--primary-dark)"><?= clean($q['appointment_token']) ?></strong></td>
+                            <td>
+                                <strong><?= clean($q['patient_name']) ?></strong>
+                                <small style="display:block;color:var(--text-muted)"><?= ucfirst(clean($q['gender'])) ?> &bull; Blood: <?= clean($q['blood_group'] ?: 'N/A') ?></small>
+                            </td>
+                            <td><?= clean($q['hospital_name']) ?></td>
+                            <td>
+                                <strong><?= date('M j, Y', strtotime($q['appointment_date'])) ?></strong>
+                                <small style="display:block;color:var(--primary)"><?= clean(format_time_slot($q['slot_time'])) ?></small>
+                            </td>
+                            <td><a href="tel:<?= clean(str_replace(' ','',$q['phone'])) ?>" style="color:var(--primary)"><?= clean($q['phone']) ?></a></td>
+                            <td><span class="status-badge <?= $qBadge ?>"><?= ucfirst(clean($q['status'])) ?></span></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
         <?php endif; ?>
     </section>
 
 </div>
 </main>
 
-<footer class="site-footer" style="padding-top:40px">
-    <div class="footer-bottom">
-        <div class="container footer-bottom-flex">
-            <p>&copy; <?= date('Y') ?> HAMS Doctor Desk &mdash; Verified Medical Practitioner Portal</p>
-            <div class="footer-bottom-links">
-                <a href="../logout.php">Sign Out</a>
-                <a href="../change-password.php">Security Settings</a>
-            </div>
+<!-- Modal: Request / Change Schedule -->
+<div class="modal-overlay" id="scheduleModal">
+    <div class="modal-box">
+        <div class="modal-head">
+            <h3 style="font-size:1.1rem;font-weight:700">Submit Schedule Change Request</h3>
+            <button onclick="closeScheduleModal()" style="border:none;background:none;font-size:1.2rem;cursor:pointer">&times;</button>
         </div>
+        <form method="POST">
+            <?= csrf_field() ?>
+            <input type="hidden" name="action" value="submit_schedule_request">
+            <div class="modal-body">
+                <div>
+                    <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">Affiliated Hospital *</label>
+                    <select name="hospital_id" required style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px">
+                        <?php foreach ($myHospitals as $mh): ?>
+                            <option value="<?= $mh['id'] ?>"><?= clean($mh['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">Day of Week *</label>
+                    <select name="day_of_week" required style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px">
+                        <option value="Monday">Monday</option>
+                        <option value="Tuesday">Tuesday</option>
+                        <option value="Wednesday">Wednesday</option>
+                        <option value="Thursday">Thursday</option>
+                        <option value="Friday">Friday</option>
+                        <option value="Saturday">Saturday</option>
+                        <option value="Sunday">Sunday</option>
+                    </select>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div>
+                        <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">Start Time *</label>
+                        <input type="time" name="start_time" required value="14:00" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px">
+                    </div>
+                    <div>
+                        <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">End Time *</label>
+                        <input type="time" name="end_time" required value="18:00" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px">
+                    </div>
+                </div>
+                <div>
+                    <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">Consultation Duration</label>
+                    <select name="slot_duration" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px">
+                        <option value="15">15 Minutes</option>
+                        <option value="20">20 Minutes</option>
+                        <option value="30" selected>30 Minutes</option>
+                        <option value="45">45 Minutes</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display:block;font-size:.8rem;font-weight:700;margin-bottom:4px">Reason for Setting / Changing Schedule *</label>
+                    <textarea name="reason" rows="2" required placeholder="Explain reason for this schedule request (e.g. Clinic hours update, patient demand)..." style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px"></textarea>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:10px">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="closeScheduleModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary btn-sm">Submit Request to Admin</button>
+                </div>
+            </div>
+        </form>
     </div>
-</footer>
+</div>
 
 <script>
-    var statusActive = true;
-
-    function toggleStatus() {
-        statusActive = !statusActive;
-        var box  = document.getElementById('statusBox');
-        var dot  = document.getElementById('statusDot');
-        var text = document.getElementById('statusText');
-        if (statusActive) {
-            dot.style.background = 'var(--primary-light)';
-            text.textContent = 'Accepting Patients (Available)';
-            box.style.borderColor = 'rgba(11,110,79,0.2)';
-        } else {
-            dot.style.background = 'var(--warning)';
-            text.textContent = 'In Consultation (Temporarily Busy)';
-            box.style.borderColor = 'rgba(217,119,6,0.3)';
-        }
-    }
-
-    function markDone(id, name) {
-        var badge = document.getElementById('badge-' + id);
-        var btn   = document.getElementById('btn-'   + id);
-        var row   = document.getElementById('row-'   + id);
-        if (badge) { badge.className = 'status-badge done'; badge.textContent = 'Completed ✓'; }
-        if (row)   { row.classList.remove('row-current'); }
-        if (btn)   { btn.className = 'btn btn-outline btn-sm'; btn.textContent = 'Summary'; btn.onclick = function(){ alert('Consultation summary for ' + name + ' saved.'); }; }
-        var done = document.getElementById('doneCount');
-        var wait = document.getElementById('waitCount');
-        if (done) done.textContent = parseInt(done.textContent) + 1;
-        if (wait) wait.textContent = Math.max(0, parseInt(wait.textContent) - 1);
-    }
-
-    function callIn(id, name) {
-        var badge = document.getElementById('badge-' + id);
-        var btn   = document.getElementById('btn-'   + id);
-        var row   = document.getElementById('row-'   + id);
-        if (badge) { badge.className = 'status-badge consulting'; badge.textContent = 'In Consultation'; }
-        if (row)   { row.classList.add('row-current'); }
-        if (btn)   { btn.className = 'btn btn-primary btn-sm'; btn.textContent = 'Mark Done'; btn.onclick = function(){ markDone(id, name); }; }
-        alert('Patient ' + name + ' called into consultation room.');
-    }
+function openScheduleModal() { document.getElementById('scheduleModal').classList.add('open'); }
+function closeScheduleModal() { document.getElementById('scheduleModal').classList.remove('open'); }
 </script>
 </body>
 </html>

@@ -6,104 +6,154 @@ require_once __DIR__ . '/../config/db.php';
 require_login(['admin']);
 
 $db = getDB();
-$message = '';
-$messageType = 'success';
+$flash = get_flash();
+$adminId = current_user_id();
 
+// Handle Actions (Approve, Reject, Add Affiliation, Remove/Left Affiliation)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
+    $action   = $_POST['action'] ?? '';
+    $doctorId = (int)($_POST['doctor_id'] ?? 0);
 
-    $userId = (int)($_POST['user_id'] ?? 0);
-    $action = $_POST['action'] ?? '';
+    if ($doctorId > 0) {
+        if ($action === 'approve_doctor') {
+            $loginId  = generate_doctor_login_id($db);
+            $tempPass = generate_temp_password(10);
+            $hash     = password_hash($tempPass, PASSWORD_BCRYPT);
 
-    $stmt = $db->prepare(
-        'SELECT u.id, u.email, dp.name
-         FROM users u
-         JOIN doctor_profiles dp ON dp.user_id = u.id
-         WHERE u.id = ? AND u.role = ? AND dp.verification_status = ?'
-    );
-    $stmt->execute([$userId, 'doctor', 'pending']);
-    $doctor = $stmt->fetch();
+            // Fetch doctor email and name
+            $stmt = $db->prepare("
+                SELECT u.email, dp.name
+                FROM users u
+                JOIN doctor_profiles dp ON dp.user_id = u.id
+                WHERE u.id = ?
+            ");
+            $stmt->execute([$doctorId]);
+            $doc = $stmt->fetch();
 
-    if (!$doctor) {
-        $message = 'Application not found or already processed.';
-        $messageType = 'error';
-    } elseif ($action === 'approve') {
-        $loginId = generate_doctor_login_id($db);
-        $tempPw  = generate_temp_password();
-        $hash    = password_hash($tempPw, PASSWORD_DEFAULT);
+            if ($doc) {
+                // Update User & Doctor Profile
+                $db->prepare("
+                    UPDATE users 
+                    SET doctor_login_id = ?, password_hash = ?, status = 'active', force_password_change = TRUE 
+                    WHERE id = ?
+                ")->execute([$loginId, $hash, $doctorId]);
 
-        try {
-            $db->beginTransaction();
-            $db->prepare('UPDATE users SET doctor_login_id=?,password_hash=?,status=?,force_password_change=TRUE WHERE id=? AND status=?')
-               ->execute([$loginId, $hash, 'active', $userId, 'pending']);
-            $db->prepare('UPDATE doctor_profiles SET verification_status=?,verified_at=CURRENT_TIMESTAMP,verified_by_admin_id=? WHERE user_id=? AND verification_status=?')
-               ->execute(['verified', current_user_id(), $userId, 'pending']);
-            $db->commit();
+                $db->prepare("
+                    UPDATE doctor_profiles 
+                    SET verification_status = 'verified', verified_at = CURRENT_TIMESTAMP, verified_by_admin_id = ?
+                    WHERE user_id = ?
+                ")->execute([$adminId, $doctorId]);
 
-            try {
-                $sent = send_doctor_verified_email($doctor['email'], $doctor['name'], $loginId, $tempPw);
-                $message = "Dr. {$doctor['name']} approved. Login ID <strong>{$loginId}</strong> " . ($sent ? "emailed to {$doctor['email']}." : "(email could not be sent — share ID manually).");
-            } catch (Throwable $e) {
-                $message = "Dr. {$doctor['name']} approved. Login ID: <strong>{$loginId}</strong>";
+                // Default hospital affiliation if selected
+                $hospId = (int)($_POST['hospital_id'] ?? 0);
+                if ($hospId > 0) {
+                    $db->prepare("
+                        INSERT INTO doctor_hospital (doctor_id, hospital_id, status, join_date)
+                        VALUES (?, ?, 'active', CURRENT_DATE)
+                    ")->execute([$doctorId, $hospId]);
+                }
+
+                // Send email
+                send_doctor_verified_email($doc['email'], $doc['name'], $loginId, $tempPass);
+                set_flash('success', "Doctor {$doc['name']} approved! Login ID: $loginId. Temporary credentials sent via email.");
             }
-        } catch (Throwable $e) {
-            if ($db->inTransaction()) $db->rollBack();
-            $message     = 'Something went wrong while approving. Please try again.';
-            $messageType = 'error';
-        }
-    } elseif ($action === 'reject') {
-        $reason = trim($_POST['reason'] ?? 'Application does not meet requirements.');
-        try {
-            $db->beginTransaction();
-            $db->prepare('UPDATE users SET status=? WHERE id=? AND status=?')
-               ->execute(['rejected', $userId, 'pending']);
-            $db->prepare('UPDATE doctor_profiles SET verification_status=?,rejection_reason=?,verified_at=CURRENT_TIMESTAMP,verified_by_admin_id=? WHERE user_id=? AND verification_status=?')
-               ->execute(['rejected', $reason, current_user_id(), $userId, 'pending']);
-            $db->commit();
-            try { send_doctor_rejected_email($doctor['email'], $doctor['name'], $reason); } catch (Throwable $e) {}
-            $message = "Application for Dr. {$doctor['name']} has been rejected.";
-        } catch (Throwable $e) {
-            if ($db->inTransaction()) $db->rollBack();
-            $message     = 'Something went wrong while rejecting. Please try again.';
-            $messageType = 'error';
+        } elseif ($action === 'reject_doctor') {
+            $reason = clean($_POST['rejection_reason'] ?? 'Credentials could not be validated.');
+            $stmt = $db->prepare("SELECT u.email, dp.name FROM users u JOIN doctor_profiles dp ON dp.user_id = u.id WHERE u.id = ?");
+            $stmt->execute([$doctorId]);
+            $doc = $stmt->fetch();
+
+            if ($doc) {
+                $db->prepare("UPDATE users SET status = 'rejected' WHERE id = ?")->execute([$doctorId]);
+                $db->prepare("UPDATE doctor_profiles SET verification_status = 'rejected', rejection_reason = ? WHERE user_id = ?")->execute([$reason, $doctorId]);
+                send_doctor_rejected_email($doc['email'], $doc['name'], $reason);
+                set_flash('success', "Doctor {$doc['name']} application rejected and notification sent.");
+            }
+        } elseif ($action === 'add_affiliation') {
+            $hospId = (int)($_POST['hospital_id'] ?? 0);
+            if ($hospId > 0) {
+                // Check if already active
+                $check = $db->prepare("SELECT 1 FROM doctor_hospital WHERE doctor_id = ? AND hospital_id = ? AND status = 'active'");
+                $check->execute([$doctorId, $hospId]);
+                if ($check->fetch()) {
+                    set_flash('error', 'Doctor is already actively affiliated with this hospital.');
+                } else {
+                    $db->prepare("
+                        INSERT INTO doctor_hospital (doctor_id, hospital_id, status, join_date, status_update)
+                        VALUES (?, ?, 'active', CURRENT_DATE, CURRENT_TIMESTAMP)
+                    ")->execute([$doctorId, $hospId]);
+                    set_flash('success', 'Doctor successfully affiliated with hospital.');
+                }
+            }
+        } elseif ($action === 'mark_left_hospital') {
+            $affId = (int)($_POST['affiliation_id'] ?? 0);
+            if ($affId > 0) {
+                $db->prepare("
+                    UPDATE doctor_hospital 
+                    SET status = 'left', leave_date = CURRENT_DATE, status_update = CURRENT_TIMESTAMP 
+                    WHERE id = ?
+                ")->execute([$affId]);
+                set_flash('success', 'Doctor marked as left hospital with departure date recorded.');
+            }
         }
     }
+    redirect('/admin/verify_doctors.php');
 }
 
-$pending = $db->query(
-    "SELECT u.id, u.email, u.created_at,
-            dp.name, dp.specialization, dp.license_no, dp.phone,
-            dp.qualification, dp.experience_years, dp.image_path
-     FROM users u
-     JOIN doctor_profiles dp ON dp.user_id = u.id
-     WHERE dp.verification_status = 'pending' AND u.role = 'doctor'
-     ORDER BY u.created_at ASC"
-)->fetchAll();
+// Fetch Pending Doctors
+$pending = $db->query("
+    SELECT u.id, u.email, u.created_at,
+           dp.name, dp.specialization, dp.license_no, dp.phone, dp.qualification, dp.experience_years, dp.image_path
+    FROM users u
+    JOIN doctor_profiles dp ON dp.user_id = u.id
+    WHERE dp.verification_status = 'pending' AND u.role = 'doctor'
+    ORDER BY u.created_at ASC
+")->fetchAll();
 
-$stats = $db->query(
-    "SELECT
-        COUNT(*) FILTER (WHERE role='doctor' AND status='pending') AS pending,
-        COUNT(*) FILTER (WHERE role='doctor' AND status='active')  AS active,
-        COUNT(*) FILTER (WHERE role='doctor' AND status='rejected') AS rejected
-     FROM users"
-)->fetch();
+// Fetch Verified Doctors with their affiliations
+$verified = $db->query("
+    SELECT u.id, u.email, u.doctor_login_id, u.status,
+           dp.name, dp.specialization, dp.license_no, dp.qualification, dp.experience_years, dp.image_path, dp.verified_at
+    FROM users u
+    JOIN doctor_profiles dp ON dp.user_id = u.id
+    WHERE dp.verification_status = 'verified'
+    ORDER BY dp.name ASC
+")->fetchAll();
+
+// Fetch Active Hospitals for dropdown
+$allHospitals = $db->query("SELECT id, name FROM hospitals WHERE is_active = TRUE ORDER BY name ASC")->fetchAll();
+
+// Fetch all doctor-hospital records
+$affiliations = $db->query("
+    SELECT dh.*, h.name AS hospital_name, dp.name AS doctor_name
+    FROM doctor_hospital dh
+    JOIN hospitals h ON h.id = dh.hospital_id
+    JOIN doctor_profiles dp ON dp.user_id = dh.doctor_id
+    ORDER BY dh.status_update DESC
+")->fetchAll();
+
+$affByDoc = [];
+foreach ($affiliations as $aff) {
+    $affByDoc[$aff['doctor_id']][] = $aff;
+}
+
+$pendingSched = (int)$db->query("SELECT COUNT(*) FROM schedules WHERE status = 'pending_approval'")->fetchColumn();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Doctor Verification Desk | HAMS Admin</title>
+    <title>Doctor Verification &amp; Affiliations | HAMS Admin</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="../assets/css/style.css?v=<?= filemtime('../assets/css/style.css') ?>">
     <style>
         :root{--sidebar-bg:#0f2b22;--sidebar-border:rgba(255,255,255,0.07);--sidebar-text:#9ab8a8;--sidebar-active-bg:rgba(255,255,255,0.09);--gold:#e5c16f}
-        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
         body.admin-page{background:#f3f6f4;font-family:var(--font-body);color:var(--text-body);min-height:100vh}
         .admin-shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
-
         .adm-sidebar{background:var(--sidebar-bg);display:flex;flex-direction:column;padding:0;position:sticky;top:0;height:100vh;overflow-y:auto}
         .adm-brand{display:flex;align-items:center;gap:12px;padding:28px 22px 24px;border-bottom:1px solid var(--sidebar-border);text-decoration:none}
         .adm-brand-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:var(--primary);color:#fff;font-size:1.3rem;flex-shrink:0}
@@ -111,68 +161,26 @@ $stats = $db->query(
         .adm-brand-text small{color:var(--sidebar-text);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}
         .adm-nav{padding:20px 12px;flex:1;display:grid;gap:4px}
         .adm-nav-label{font-size:.66rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#3d6052;padding:14px 10px 6px;margin-top:8px}
-        .adm-nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;text-decoration:none;color:var(--sidebar-text);font-size:.88rem;font-weight:600;transition:all 150ms ease}
-        .adm-nav a:hover,.adm-nav a.active{background:var(--sidebar-active-bg);color:#fff}
-        .adm-nav a .nav-icon{font-size:1rem;width:22px;text-align:center}
+        .adm-nav a{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;text-decoration:none;color:var(--sidebar-text);font-size:.88rem;font-weight:600;transition:all 150ms}
+        .adm-nav a:hover, .adm-nav a.active{background:var(--sidebar-active-bg);color:#fff}
         .adm-badge{margin-left:auto;background:var(--gold);color:#0f2b22;font-size:.7rem;font-weight:800;padding:2px 7px;border-radius:99px}
-        .adm-sidebar-footer{padding:16px 20px 24px;border-top:1px solid var(--sidebar-border)}
-        .adm-sys-status{display:flex;align-items:center;gap:8px;font-size:.78rem;color:var(--sidebar-text);margin-bottom:12px}
-        .adm-sys-dot{width:7px;height:7px;border-radius:50%;background:#22c55e}
-        .adm-sidebar-footer a{display:block;font-size:.82rem;font-weight:600;color:var(--gold);text-decoration:none;padding:4px 0}
-        .adm-sidebar-footer a:hover{color:#fff}
-
         .adm-content{display:flex;flex-direction:column;min-height:100vh}
         .adm-topbar{background:#fff;border-bottom:1px solid var(--border);padding:0 36px;display:flex;align-items:center;justify-content:space-between;height:70px;position:sticky;top:0;z-index:40}
-        .adm-topbar-left p{color:var(--text-muted);font-size:.8rem;margin-bottom:2px}
-        .adm-topbar-left h1{font-size:1.35rem;font-weight:800;color:var(--text-main);letter-spacing:-.02em}
-        .adm-profile{display:flex;align-items:center;gap:12px}
-        .adm-avatar{width:38px;height:38px;border-radius:50%;background:var(--gold);color:var(--sidebar-bg);font-weight:800;font-size:.85rem;display:grid;place-items:center}
-        .adm-profile-info strong{display:block;font-size:.88rem;color:var(--text-main)}
-        .adm-profile-info small{font-size:.74rem;color:var(--text-muted)}
         .adm-body{padding:32px 36px;flex:1}
-
-        /* Mini stat strip */
-        .mini-stat-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px}
-        .mini-stat{background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:14px}
-        .mini-stat-icon{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;font-size:1.1rem;flex-shrink:0}
-        .mini-stat-icon.warn{background:#fef3c7;color:#92661b}
-        .mini-stat-icon.ok  {background:#dcfce7;color:var(--primary-dark)}
-        .mini-stat-icon.err {background:#fee2e2;color:#b91c1c}
-        .mini-stat-num{font-family:var(--font-heading);font-size:1.6rem;font-weight:800;line-height:1;color:var(--text-main)}
-        .mini-stat-label{font-size:.74rem;color:var(--text-muted);margin-top:2px}
-
-        /* Doctor review cards */
-        .doctor-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:20px}
-        .doc-card{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 1px 4px rgba(15,43,34,.04)}
-        .doc-card-head{background:linear-gradient(120deg,var(--primary-surface) 0%,#daf4e5 100%);padding:20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border)}
-        .doc-card-avatar{width:52px;height:52px;border-radius:50%;background:var(--primary-soft);color:var(--primary-dark);font-weight:800;font-size:1.05rem;display:grid;place-items:center;flex-shrink:0;border:2px solid rgba(11,110,79,.2)}
-        .doc-card-avatar img{width:52px;height:52px;border-radius:50%;object-fit:cover}
-        .doc-card-head-info h3{font-size:1rem;font-weight:700;color:var(--text-main);margin-bottom:3px}
-        .doc-card-head-info span{font-size:.78rem;color:var(--primary);font-weight:700;background:var(--primary-soft);padding:2px 8px;border-radius:99px}
-
-        .doc-card-body{padding:18px 20px;display:grid;gap:8px}
-        .doc-field{display:flex;align-items:flex-start;gap:10px;font-size:.84rem}
-        .doc-field-label{color:var(--text-muted);font-weight:600;width:88px;flex-shrink:0}
-        .doc-field-val{color:var(--text-main);font-weight:500;word-break:break-word}
-        .doc-field-val code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:.8rem;color:var(--primary-dark)}
-
-        .doc-card-actions{padding:16px 20px;border-top:1px solid var(--border);display:flex;gap:10px}
-        .doc-card-actions .btn{flex:1;justify-content:center}
-
-        /* Rejection modal overlay */
-        .modal-overlay{position:fixed;inset:0;background:rgba(15,43,34,.5);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
-        .modal-overlay.open{display:flex}
-        .modal-box{background:#fff;border-radius:18px;padding:32px;width:min(100%,480px);box-shadow:0 24px 60px rgba(0,0,0,.2)}
-        .modal-box h3{font-size:1.3rem;margin-bottom:8px;color:var(--text-main)}
-        .modal-box p{font-size:.9rem;color:var(--text-muted);margin-bottom:18px}
-        .modal-box textarea{width:100%;min-height:100px;border:1.5px solid var(--border);border-radius:10px;padding:12px;font-family:var(--font-body);font-size:.9rem;resize:vertical;outline:none;transition:border 150ms}
-        .modal-box textarea:focus{border-color:var(--primary)}
-        .modal-actions{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
+        .panel{background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:0 1px 4px rgba(15,43,34,.04);margin-bottom:28px}
+        .panel-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border);flex-wrap:wrap;gap:12px}
+        .adm-table{width:100%;border-collapse:collapse;font-size:.85rem}
+        .adm-table th{padding:10px 18px;text-align:left;font-size:.7rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);background:#f8faf7;border-bottom:1px solid var(--border)}
+        .adm-table td{padding:14px 18px;border-bottom:1px solid var(--border);color:var(--text-body);vertical-align:middle}
+        .hosp-tag-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;font-size:.76rem;margin-right:4px;margin-bottom:4px}
+        .hosp-tag-active{background:#dcfce7;color:#15803d;border:1px solid #bbf7d0}
+        .hosp-tag-left{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0;text-decoration:line-through}
     </style>
 </head>
 <body class="admin-page">
 <div class="adm-sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
 <button class="adm-mob-toggle" id="sidebarToggle" onclick="openSidebar()" aria-label="Open navigation">☰</button>
+
 <div class="admin-shell">
 
     <!-- Sidebar -->
@@ -184,200 +192,214 @@ $stats = $db->query(
                 <small>Admin Console</small>
             </div>
         </a>
+
         <nav class="adm-nav">
-            <span class="adm-nav-label">Hospital System</span>
+            <span class="adm-nav-label">Hospital Network</span>
             <a href="dashboard.php"><span class="nav-icon">⊞</span>Overview</a>
+            <a href="hospitals.php"><span class="nav-icon">🏥</span>Manage Hospitals</a>
             <a class="active" href="verify_doctors.php">
-                <span class="nav-icon">✦</span>Verify Doctors
-                <?php if ((int)$stats['pending'] > 0): ?>
-                    <span class="adm-badge"><?= (int)$stats['pending'] ?></span>
-                <?php endif; ?>
+                <span class="nav-icon">🩺</span>Verify &amp; Affiliations
+                <?php if (count($pending) > 0): ?><span class="adm-badge"><?= count($pending) ?></span><?php endif; ?>
             </a>
+            <a href="schedule_approvals.php">
+                <span class="nav-icon">📅</span>Schedule Approvals
+                <?php if ($pendingSched > 0): ?><span class="adm-badge"><?= $pendingSched ?></span><?php endif; ?>
+            </a>
+            <a href="appointments.php"><span class="nav-icon">📋</span>Appointments</a>
+
             <span class="adm-nav-label">Account</span>
             <a href="../logout.php"><span class="nav-icon">↩</span>Sign Out</a>
         </nav>
-        <div class="adm-sidebar-footer">
-            <div class="adm-sys-status"><span class="adm-sys-dot"></span>All systems operational</div>
-            <a href="dashboard.php">← Back to Overview</a>
-        </div>
     </aside>
 
     <!-- Content -->
     <div class="adm-content">
         <header class="adm-topbar">
-            <div class="adm-topbar-left">
-                <p>Doctor Accreditation / <?= date('F j, Y') ?></p>
-                <h1>Verification Desk</h1>
-            </div>
-            <div class="adm-profile">
-                <div class="adm-avatar">SA</div>
-                <div class="adm-profile-info">
-                    <strong>Super Admin</strong>
-                    <small>System Administrator</small>
-                </div>
+            <div>
+                <p style="color:var(--text-muted);font-size:.8rem">Medical Practitioners &amp; Affiliations</p>
+                <h1 style="font-size:1.35rem;font-weight:800;color:var(--text-main)">Doctor Verification &amp; Hospital Assignments</h1>
             </div>
         </header>
 
         <div class="adm-body">
-
-            <?php if ($message): ?>
-            <div class="<?= $messageType==='error'?'error-message':'success-message' ?>" style="margin-bottom:24px">
-                <?= $message /* already contains safe HTML */ ?>
+            <?php if ($flash): ?>
+            <div class="<?= $flash['type']==='error'?'error-message':'success-message' ?>" style="margin-bottom:20px">
+                <?= clean($flash['message']) ?>
             </div>
             <?php endif; ?>
 
-            <!-- Mini stats -->
-            <div class="mini-stat-strip">
-                <div class="mini-stat">
-                    <div class="mini-stat-icon warn">⏳</div>
-                    <div><div class="mini-stat-num"><?= (int)$stats['pending'] ?></div><div class="mini-stat-label">Awaiting Review</div></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="mini-stat-icon ok">✓</div>
-                    <div><div class="mini-stat-num"><?= (int)$stats['active'] ?></div><div class="mini-stat-label">Verified & Active</div></div>
-                </div>
-                <div class="mini-stat">
-                    <div class="mini-stat-icon err">✕</div>
-                    <div><div class="mini-stat-num"><?= (int)$stats['rejected'] ?></div><div class="mini-stat-label">Applications Rejected</div></div>
-                </div>
-            </div>
-
-            <?php if (empty($pending)): ?>
-            <div style="background:#fff;border:1px solid var(--border);border-radius:14px;text-align:center;padding:60px 24px">
-                <div style="font-size:3rem;margin-bottom:12px">🎉</div>
-                <h3 style="font-size:1.3rem;margin-bottom:8px">All Caught Up!</h3>
-                <p style="color:var(--text-muted);font-size:.95rem">No pending doctor applications right now. New applications will appear here when submitted.</p>
-                <a class="btn btn-primary" href="dashboard.php" style="margin-top:22px">Return to Dashboard</a>
-            </div>
-            <?php else: ?>
-
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
-                <div>
-                    <span class="section-tag">Pending Review</span>
-                    <h2 style="font-size:1.3rem;margin-top:4px"><?= count($pending) ?> Application<?= count($pending)!==1?'s':'' ?> Waiting</h2>
-                </div>
-                <p style="font-size:.84rem;color:var(--text-muted)">Approve to auto-generate login credentials &amp; email the doctor.</p>
-            </div>
-
-            <div class="doctor-cards">
-                <?php foreach ($pending as $d):
-                    $av = strtoupper(mb_substr(trim(preg_replace('/^Dr\.?\s*/i','',$d['name'])),0,2)) ?: 'DR';
-                    $submittedAgo = human_time_diff($d['created_at']);
-                ?>
-                <div class="doc-card">
-                    <div class="doc-card-head">
-                        <div class="doc-card-avatar">
-                            <?php if (!empty($d['image_path']) && file_exists(__DIR__.'/../'.$d['image_path'])): ?>
-                                <img src="../<?= clean($d['image_path']) ?>" alt="<?= clean($d['name']) ?>">
-                            <?php else: ?>
-                                <?= clean($av) ?>
-                            <?php endif; ?>
-                        </div>
-                        <div class="doc-card-head-info">
-                            <h3><?= clean($d['name']) ?></h3>
-                            <span><?= clean($d['specialization']) ?></span>
-                        </div>
-                    </div>
-
-                    <div class="doc-card-body">
-                        <div class="doc-field">
-                            <span class="doc-field-label">Email</span>
-                            <span class="doc-field-val"><?= clean($d['email']) ?></span>
-                        </div>
-                        <div class="doc-field">
-                            <span class="doc-field-label">Phone</span>
-                            <span class="doc-field-val"><?= clean($d['phone']) ?></span>
-                        </div>
-                        <div class="doc-field">
-                            <span class="doc-field-label">License</span>
-                            <span class="doc-field-val"><code><?= clean($d['license_no']) ?></code></span>
-                        </div>
-                        <div class="doc-field">
-                            <span class="doc-field-label">Qualification</span>
-                            <span class="doc-field-val"><?= clean($d['qualification']) ?></span>
-                        </div>
-                        <div class="doc-field">
-                            <span class="doc-field-label">Experience</span>
-                            <span class="doc-field-val"><?= (int)$d['experience_years'] ?> years</span>
-                        </div>
-                        <div class="doc-field">
-                            <span class="doc-field-label">Applied</span>
-                            <span class="doc-field-val"><?= clean($submittedAgo) ?></span>
-                        </div>
-                    </div>
-
-                    <div class="doc-card-actions">
-                        <!-- Approve -->
-                        <form method="POST">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="user_id" value="<?= (int)$d['id'] ?>">
-                            <input type="hidden" name="action" value="approve">
-                            <button type="submit" class="btn btn-primary btn-sm"
-                                onclick="return confirm('Approve Dr. <?= clean(addslashes($d['name'])) ?>? An auto-generated login ID and temporary password will be emailed to them.')">
-                                ✓ Approve
-                            </button>
-                        </form>
-
-                        <!-- Reject (opens modal) -->
-                        <button type="button" class="btn btn-danger btn-sm"
-                            onclick="openRejectModal(<?= (int)$d['id'] ?>, '<?= clean(addslashes($d['name'])) ?>')">
-                            ✕ Reject
-                        </button>
+            <!-- Section 1: Pending Doctor Approvals -->
+            <div class="panel">
+                <div class="panel-head" style="background:#fffbf0">
+                    <div>
+                        <h2 style="font-size:1.1rem;font-weight:700;color:#92661b">
+                            ⏳ Pending Doctor Verification Applications (<?= count($pending) ?>)
+                        </h2>
+                        <small style="color:var(--text-muted)">Verify medical license number, credentials, and approve with an assigned hospital.</small>
                     </div>
                 </div>
-                <?php endforeach; ?>
+
+                <div class="panel-body" style="overflow-x:auto">
+                    <?php if (empty($pending)): ?>
+                        <div style="padding:32px 20px;text-align:center;color:var(--text-muted)">
+                            <div style="font-size:2rem;margin-bottom:6px">🎉</div>
+                            <p>No pending doctor applications. All registrations are verified!</p>
+                        </div>
+                    <?php else: ?>
+                    <table class="adm-table">
+                        <thead>
+                            <tr>
+                                <th>Doctor Details</th>
+                                <th>Specialization &amp; License</th>
+                                <th>Experience / Contact</th>
+                                <th>Assign Initial Hospital</th>
+                                <th style="text-align:right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($pending as $p): ?>
+                            <tr>
+                                <td>
+                                    <strong style="display:block;font-size:.95rem;color:var(--text-main)"><?= clean($p['name']) ?></strong>
+                                    <small style="color:var(--text-muted)"><?= clean($p['email']) ?> &bull; <?= clean($p['qualification']) ?></small>
+                                </td>
+                                <td>
+                                    <span class="badge-tag" style="background:#e0f2fe;color:#0369a1;font-weight:700"><?= clean($p['specialization']) ?></span>
+                                    <small style="display:block;color:var(--text-muted);margin-top:4px">Lic: <?= clean($p['license_no']) ?></small>
+                                </td>
+                                <td>
+                                    <strong><?= (int)$p['experience_years'] ?> years exp</strong>
+                                    <small style="display:block;color:var(--text-muted)">📞 <?= clean($p['phone']) ?></small>
+                                </td>
+                                <td>
+                                    <form id="approve_form_<?= $p['id'] ?>" method="POST" style="display:inline">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="action" value="approve_doctor">
+                                        <input type="hidden" name="doctor_id" value="<?= $p['id'] ?>">
+                                        <select name="hospital_id" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:.82rem">
+                                            <option value="">-- Select Hospital --</option>
+                                            <?php foreach ($allHospitals as $h): ?>
+                                                <option value="<?= $h['id'] ?>"><?= clean($h['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </form>
+                                </td>
+                                <td style="text-align:right">
+                                    <div style="display:inline-flex;gap:6px">
+                                        <button type="submit" form="approve_form_<?= $p['id'] ?>" class="btn btn-primary btn-sm">Approve</button>
+                                        <form method="POST" style="display:inline" onsubmit="return promptDocReject(this)">
+                                            <?= csrf_field() ?>
+                                            <input type="hidden" name="action" value="reject_doctor">
+                                            <input type="hidden" name="doctor_id" value="<?= $p['id'] ?>">
+                                            <input type="hidden" name="rejection_reason" value="">
+                                            <button type="submit" class="btn btn-outline btn-sm">Reject</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <?php endif; ?>
+                </div>
             </div>
-            <?php endif; ?>
+
+            <!-- Section 2: Verified Doctors & Multi-Hospital Affiliations -->
+            <div class="panel">
+                <div class="panel-head">
+                    <div>
+                        <h2 style="font-size:1.1rem;font-weight:700">Verified Specialists &amp; Affiliated Hospitals (<?= count($verified) ?>)</h2>
+                        <small style="color:var(--text-muted)">Manage multi-hospital affiliations, add doctors to new hospitals, or mark them as left.</small>
+                    </div>
+                </div>
+
+                <div class="panel-body" style="overflow-x:auto">
+                    <table class="adm-table">
+                        <thead>
+                            <tr>
+                                <th>Specialist</th>
+                                <th>Login ID &amp; License</th>
+                                <th>Current Hospital Affiliations</th>
+                                <th>Assign Additional Hospital</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($verified as $v): 
+                                $docAffs = $affByDoc[$v['id']] ?? [];
+                            ?>
+                            <tr>
+                                <td>
+                                    <strong style="color:var(--text-main);font-size:.95rem"><?= clean($v['name']) ?></strong>
+                                    <small style="display:block;color:var(--text-muted)"><?= clean($v['specialization']) ?> &bull; <?= clean($v['qualification']) ?></small>
+                                </td>
+                                <td>
+                                    <strong style="color:var(--primary-dark)"><?= clean($v['doctor_login_id']) ?></strong>
+                                    <small style="display:block;color:var(--text-muted)"><?= clean($v['license_no']) ?></small>
+                                </td>
+                                <td>
+                                    <?php if (empty($docAffs)): ?>
+                                        <span style="font-size:.8rem;color:var(--text-muted)">No active hospital affiliations</span>
+                                    <?php else: ?>
+                                        <?php foreach ($docAffs as $da): ?>
+                                            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;background:#f8faf7;padding:5px 10px;border-radius:6px;border:1px solid var(--border)">
+                                                <div>
+                                                    <strong style="font-size:.82rem"><?= clean($da['hospital_name']) ?></strong>
+                                                    <small style="display:block;color:var(--text-muted);font-size:.72rem">
+                                                        Joined: <?= date('M j, Y', strtotime($da['join_date'])) ?>
+                                                        <?= $da['status'] === 'left' ? ' &bull; Left: ' . date('M j, Y', strtotime($da['leave_date'] ?? 'now')) : '' ?>
+                                                    </small>
+                                                </div>
+                                                <div>
+                                                    <?php if ($da['status'] === 'active'): ?>
+                                                        <form method="POST" style="display:inline" onsubmit="return confirm('Mark <?= clean(addslashes($v['name'])) ?> as left from <?= clean(addslashes($da['hospital_name'])) ?>?')">
+                                                            <?= csrf_field() ?>
+                                                            <input type="hidden" name="action" value="mark_left_hospital">
+                                                            <input type="hidden" name="doctor_id" value="<?= $v['id'] ?>">
+                                                            <input type="hidden" name="affiliation_id" value="<?= $da['id'] ?>">
+                                                            <button type="submit" class="btn btn-ghost btn-sm" style="color:#b91c1c;padding:2px 6px;font-size:.72rem">Mark Left</button>
+                                                        </form>
+                                                    <?php else: ?>
+                                                        <span class="status-badge waiting" style="font-size:.68rem">Left</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <form method="POST" style="display:flex;gap:6px">
+                                        <?= csrf_field() ?>
+                                        <input type="hidden" name="action" value="add_affiliation">
+                                        <input type="hidden" name="doctor_id" value="<?= $v['id'] ?>">
+                                        <select name="hospital_id" required style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:.82rem">
+                                            <option value="">-- Add Hospital --</option>
+                                            <?php foreach ($allHospitals as $h): ?>
+                                                <option value="<?= $h['id'] ?>"><?= clean($h['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                        <button type="submit" class="btn btn-outline btn-sm">Assign</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
 
         </div>
     </div>
 </div>
 
-<!-- Rejection Modal -->
-<div class="modal-overlay" id="rejectModal">
-    <div class="modal-box">
-        <h3>Reject Doctor Application</h3>
-        <p id="rejectModalDesc">Please provide a clear reason for rejection. This will be sent to the doctor via email.</p>
-        <form method="POST" id="rejectForm">
-            <?= csrf_field() ?>
-            <input type="hidden" name="user_id" id="rejectUserId">
-            <input type="hidden" name="action" value="reject">
-            <textarea name="reason" id="rejectReason" placeholder="e.g. License number could not be verified with the Nepal Medical Council. Please reapply with correct credentials."></textarea>
-            <div class="modal-actions">
-                <button type="button" class="btn btn-outline btn-sm" onclick="closeRejectModal()">Cancel</button>
-                <button type="submit" class="btn btn-danger btn-sm"
-                    onclick="if(!document.getElementById('rejectReason').value.trim()){alert('Please enter a reason.');return false;}">
-                    Confirm Rejection
-                </button>
-            </div>
-        </form>
-    </div>
-</div>
-
 <script>
-function openSidebar(){
-    document.querySelector(".adm-sidebar").classList.add("open");
-    document.getElementById("sidebarOverlay").classList.add("open");
+function promptDocReject(form) {
+    var reason = prompt('Please enter the reason for rejection:');
+    if (!reason || !reason.trim()) return false;
+    form.querySelector('input[name="rejection_reason"]').value = reason.trim();
+    return true;
 }
-function closeSidebar(){
-    document.querySelector(".adm-sidebar").classList.remove("open");
-    document.getElementById("sidebarOverlay").classList.remove("open");
-}
-</script>
-<script>
-    function openRejectModal(userId, name) {
-        document.getElementById('rejectUserId').value = userId;
-        document.getElementById('rejectModalDesc').textContent =
-            'Provide a clear reason for rejecting Dr. ' + name + '. This will be emailed to them.';
-        document.getElementById('rejectReason').value = '';
-        document.getElementById('rejectModal').classList.add('open');
-    }
-    function closeRejectModal() {
-        document.getElementById('rejectModal').classList.remove('open');
-    }
-    document.getElementById('rejectModal').addEventListener('click', function(e) {
-        if (e.target === this) closeRejectModal();
-    });
+function openSidebar(){ document.querySelector(".adm-sidebar").classList.add("open"); document.getElementById("sidebarOverlay").classList.add("open"); }
+function closeSidebar(){ document.querySelector(".adm-sidebar").classList.remove("open"); document.getElementById("sidebarOverlay").classList.remove("open"); }
 </script>
 </body>
 </html>
